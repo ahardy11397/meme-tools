@@ -1,0 +1,47 @@
+use ../../ast
+use ../../stmt
+use ../../emit
+
+function get_repo_path(filename: String) -> String:
+    if file exists filename:
+        return filename
+    return "../../" + filename
+
+function verify_source_invariant(src: String) -> Void:
+    define t1_opt: Optional<Node> as parse_source(src)
+    assert t1_opt is not nothing
+    define t1: Node as value of t1_opt
+
+    define em1: String as emit_program(t1)
+    define t2_opt: Optional<Node> as parse_source(em1 + "\n")
+    assert t2_opt is not nothing
+    define t2: Node as value of t2_opt
+
+    define diff_msg: String as tree_diff(t1, t2, "root")
+    assert length of string diff_msg == 0
+    assert trees_equal(t1, t2)
+
+    define em2: String as emit_program(t2)
+    assert em1 == em2
+
+function verify_file_path_invariant(path: String) -> Void:
+    define content_opt: Optional<String> as read string from file path or else nothing
+    assert content_opt is not nothing
+    call verify_source_invariant(value of content_opt)
+
+test repo_self_modules_invariant_test:
+    call verify_file_path_invariant(get_repo_path("ast.meme"))
+    call verify_file_path_invariant(get_repo_path("keywords.meme"))
+    call verify_file_path_invariant(get_repo_path("hasher.meme"))
+    call verify_file_path_invariant(get_repo_path("checker.meme"))
+    call verify_file_path_invariant(get_repo_path("emit.meme"))
+    call verify_file_path_invariant(get_repo_path("expr.meme"))
+    call verify_file_path_invariant(get_repo_path("lexer.meme"))
+    call verify_file_path_invariant(get_repo_path("stmt.meme"))
+    call verify_file_path_invariant(get_repo_path("main.meme"))
+
+test real_examples_invariant_test:
+    call verify_file_path_invariant("/mnt/ssd/projects/meme/examples/advanced/512_cli_argument_router.meme")
+    call verify_file_path_invariant("/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme")
+    call verify_file_path_invariant("/mnt/ssd/projects/meme/examples/advanced/539_json_record_collections.meme")
+    call verify_file_path_invariant("/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme")

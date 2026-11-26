@@ -1,0 +1,58 @@
+use ../../checker
+
+test missing_source_file_error_test:
+    define missing_path: String as "tests/tmp/nonexistent_xyz987.meme"
+    define res: CheckResult as check_file(missing_path)
+    assert res.verdict == "ERROR"
+    assert res.is_fresh == false
+    assert res.has_error == true
+    assert res.detail contains "cannot read source file"
+    assert res.error_message contains "cannot read source file"
+
+test no_lock_file_test:
+    create directory "tests/tmp"
+    define tmp_src: String as "tests/tmp/no_lock_case.meme"
+    write file tmp_src with "define x: Int as 42\n"
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "NO LOCK"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+
+test no_matching_entry_test:
+    create directory "tests/tmp"
+    define tmp_src: String as "tests/tmp/no_entry_case.meme"
+    define tmp_lock: String as "tests/tmp/no_entry_case.meme.lock"
+    write file tmp_src with "define x: Int as 42\n"
+
+    define entries: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries["unrelated/other.meme"] to LockEntry(source_sha256="abc", provider="heuristic", canonical_meme="define x: Int as 42\n")
+    define lf: LockFile as LockFile(lockfile_version=1, entries=entries)
+    write lf as json to file tmp_lock
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "NO ENTRY"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test truncated_corrupt_lock_json_error_test:
+    create directory "tests/tmp"
+    define tmp_src: String as "tests/tmp/corrupt_case.meme"
+    define tmp_lock: String as "tests/tmp/corrupt_case.meme.lock"
+    write file tmp_src with "define x: Int as 42\n"
+    write file tmp_lock with "{\"lockfile_version\": 1, \"entries\": {"
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "ERROR"
+    assert res.is_fresh == false
+    assert res.has_error == true
+    assert res.detail contains "failed to parse lock file"
+    assert res.error_message contains "failed to parse lock file"
+
+    delete file tmp_src
+    delete file tmp_lock

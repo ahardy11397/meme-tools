@@ -1,0 +1,139 @@
+# checker.meme - Exact lockfile freshness checker with lexical fallbacks
+use hasher
+use lexer
+
+record LockEntry:
+    source_sha256: String
+    provider: String
+    canonical_meme: String
+
+record LockFile:
+    lockfile_version: Int
+    entries: Map<String, LockEntry>
+
+record MatchResult:
+    found: Bool
+    ambiguous: Bool
+    key: String
+
+record CheckResult:
+    verdict: String
+    detail: String
+    is_fresh: Bool
+    has_error: Bool
+    error_message: String
+
+function strip_leading_dotslash(path: String) -> String:
+    define clean: String as path
+    while clean starts with "./":
+        set clean to slice clean from 2 to length of string clean
+    return clean
+
+function get_basename(path: String) -> String:
+    define n: Int as length of string path
+    define last_slash: Int as -1
+    for i from 0 to n - 1:
+        if char at i of path == "/":
+            set last_slash to i
+    if last_slash == -1:
+        return path
+    return slice path from (last_slash + 1) to n
+
+function key_matches_path(key: String, filename: String) -> Bool:
+    define clean: String as strip_leading_dotslash(filename)
+    if key == clean:
+        return true
+    if key ends with ("/" + clean):
+        return true
+    if clean ends with ("/" + key):
+        return true
+    return false
+
+function key_matches_basename(key: String, filename: String) -> Bool:
+    define clean: String as strip_leading_dotslash(filename)
+    define base: String as get_basename(clean)
+    if key == base:
+        return true
+    if key ends with ("/" + base):
+        return true
+    return false
+
+function find_matching_key(entries: Map<String, LockEntry>, filename: String) -> MatchResult:
+    define matching_keys: List<String> as empty List<String>
+    for each k in entries:
+        if key_matches_path(k, filename):
+            append k to matching_keys
+    if length of matching_keys == 0:
+        for each k in entries:
+            if key_matches_basename(k, filename):
+                append k to matching_keys
+    if length of matching_keys == 0:
+        return MatchResult(found=false, ambiguous=false, key="")
+    if length of matching_keys == 1:
+        return MatchResult(found=true, ambiguous=false, key=matching_keys[0])
+    define best_key: String as matching_keys[0]
+    define best_len: Int as length of string best_key
+    for each k in matching_keys:
+        define cur_len: Int as length of string k
+        if cur_len > best_len:
+            set best_key to k
+            set best_len to cur_len
+    return MatchResult(found=true, ambiguous=true, key=best_key)
+
+function strip_comments(toks: List<Token>) -> List<Token>:
+    define kept: List<Token> as empty List<Token>
+    for each t in toks:
+        if t.kind != "comment":
+            append t to kept
+    return kept
+
+function are_tokens_identical(toks1: List<Token>, toks2: List<Token>) -> Bool:
+    if length of toks1 != length of toks2:
+        return false
+    for i from 0 to length of toks1 - 1:
+        define t1: Token as toks1[i]
+        define t2: Token as toks2[i]
+        if t1.kind != t2.kind or t1.value != t2.value:
+            return false
+    return true
+
+function check_file(path: String) -> CheckResult:
+    define src_opt: Optional<String> as read string from file path or else nothing
+    if src_opt is nothing:
+        define err_msg: String as "cannot read source file: " + path
+        return CheckResult(verdict="ERROR", detail="[" + err_msg + "]", is_fresh=false, has_error=true, error_message="Error: " + err_msg)
+    define source_text: String as value of src_opt
+
+    define lock_path: String as path + ".lock"
+    if not (file exists lock_path):
+        return CheckResult(verdict="NO LOCK", detail="", is_fresh=false, has_error=false, error_message="")
+
+    define lock_opt: Optional<LockFile> as read json record LockFile from file lock_path or else nothing
+    if lock_opt is nothing:
+        define err_msg: String as "failed to parse lock file: " + lock_path
+        return CheckResult(verdict="ERROR", detail="[" + err_msg + "]", is_fresh=false, has_error=true, error_message="Error: " + err_msg)
+    define lock: LockFile as value of lock_opt
+
+    define match_res: MatchResult as find_matching_key(lock.entries, path)
+    if not match_res.found:
+        return CheckResult(verdict="NO ENTRY", detail="", is_fresh=false, has_error=false, error_message="")
+
+    define entry: LockEntry as lock.entries[match_res.key]
+    define computed_hash: String as compute_source_hash(source_text)
+
+    if computed_hash == entry.source_sha256:
+        define detail: String as ""
+        if match_res.ambiguous:
+            set detail to "[ambiguous key, matched longest: " + match_res.key + "]"
+        return CheckResult(verdict="LOCKED-FRESH", detail=detail, is_fresh=true, has_error=false, error_message="")
+
+    define src_tokens: List<Token> as tokenize(source_text)
+    define can_tokens: List<Token> as tokenize(entry.canonical_meme)
+
+    if are_tokens_identical(strip_comments(src_tokens), strip_comments(can_tokens)):
+        return CheckResult(verdict="LEXICAL-FRESH", detail="[layout-only changes]", is_fresh=false, has_error=false, error_message="")
+
+    define detail_drifted: String as ""
+    if match_res.ambiguous:
+        set detail_drifted to "[ambiguous key, matched longest: " + match_res.key + "]"
+    return CheckResult(verdict="DRIFTED", detail=detail_drifted, is_fresh=false, has_error=false, error_message="")

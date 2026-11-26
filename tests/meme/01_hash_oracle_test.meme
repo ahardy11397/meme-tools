@@ -1,0 +1,63 @@
+use ../../hasher
+
+test nist_empty_string_test:
+    define v1: String as sha256 of ""
+    assert v1 == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    define h1: String as compute_source_hash("")
+    assert h1 == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+test nist_abc_test:
+    define v2: String as sha256 of "abc"
+    assert v2 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    define h2: String as compute_source_hash("abc")
+    assert h2 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+test nist_56_byte_vector_test:
+    define v3: String as sha256 of "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+    assert v3 == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    define h3: String as compute_source_hash("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+    assert h3 == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+
+test nist_448_bit_multiblock_test:
+    define v4: String as sha256 of "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+    assert v4 == "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+    define h4: String as compute_source_hash("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu")
+    assert h4 == "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+
+test newline_normalization_crlf_cr_test:
+    define lf_src: String as "define a: Int as 10\ndefine b: Int as 20"
+    define crlf_src: String as "define a: Int as 10\r\ndefine b: Int as 20\r\n\r\n"
+    define cr_src: String as "define a: Int as 10\rdefine b: Int as 20\r\r"
+    define h_lf: String as compute_source_hash(lf_src)
+    define h_crlf: String as compute_source_hash(crlf_src)
+    define h_cr: String as compute_source_hash(cr_src)
+    assert h_lf == h_crlf
+    assert h_lf == h_cr
+
+test test_block_reconstruction_sorting_test:
+    define ordered_src: String as "define x: Int as 1\n\ntest a_test:\n    assert x == 1\n\ntest b_test:\n    assert x > 0"
+    define reversed_src: String as "define x: Int as 1\n\ntest b_test:\n    assert x > 0\n\ntest a_test:\n    assert x == 1\n\n"
+    define h_ord: String as compute_source_hash(ordered_src)
+    define h_rev: String as compute_source_hash(reversed_src)
+    assert h_ord == h_rev
+
+test real_fixture_hashes_match_locks_test:
+    define f538_opt: Optional<String> as read string from file "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme" or else nothing
+    assert f538_opt is not nothing
+    define h538: String as compute_source_hash(value of f538_opt)
+    assert h538 == "58dbe32aeb81f55557e15d6f611ca111f0e2d128ac48c27af97b9055ab85e1ed"
+
+    define f541_opt: Optional<String> as read string from file "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme" or else nothing
+    assert f541_opt is not nothing
+    define h541: String as compute_source_hash(value of f541_opt)
+    assert h541 == "932035723226291de5499e724fd735f7e021de6daffe27d6030d21775bd18edf"
+
+    define f527_opt: Optional<String> as read string from file "/mnt/ssd/projects/meme/examples/advanced/527_json_records.meme" or else nothing
+    assert f527_opt is not nothing
+    define h527: String as compute_source_hash(value of f527_opt)
+    assert h527 == "97879c5fd26fab46a29b0abc76746aa766261836624d65b46e7e37c56b618c2a"
+
+    define f512_opt: Optional<String> as read string from file "/mnt/ssd/projects/meme/examples/advanced/512_cli_argument_router.meme" or else nothing
+    assert f512_opt is not nothing
+    define h512: String as compute_source_hash(value of f512_opt)
+    assert h512 == "e737aac5c6f2cbd12225222febca8a8d5790a1dd37a1b236bdae479955fba17f"

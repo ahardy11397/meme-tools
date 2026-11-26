@@ -1,0 +1,140 @@
+# main.meme - Unified CLI for Memelang source-pipeline
+use ast
+use stmt
+use emit
+use lexer
+use hasher
+use checker
+
+function print_usage() -> Void:
+    print "Usage: memetools <command> [args]"
+    print "Commands:"
+    print "  parse <file.meme> [-o out.json]   Parse source and output AST as text or JSON"
+    print "  emit <file.meme> [-o out.meme]    Emit canonical Memelang source"
+    print "  check <file.meme> [...]           Check lockfile freshness"
+    print "  hash <file.meme>                  Print computed normalized source hash"
+
+function run_cli() -> Void:
+    define argc: Int as argument count
+    if argc < 2:
+        call print_usage()
+        exit with code 1
+
+    define cmd: String as argument 1
+    if cmd != "parse" and cmd != "emit" and cmd != "check" and cmd != "hash":
+        print error "Unknown command: " + cmd
+        call print_usage()
+        exit with code 1
+
+    if cmd == "parse":
+        if argc != 3 and argc != 5:
+            print error "Usage: memetools parse <file.meme> [-o out.json]"
+            exit with code 1
+        if argc == 5 and argument 3 != "-o":
+            print error "Usage: memetools parse <file.meme> [-o out.json]"
+            exit with code 1
+
+        define in_path: String as argument 2
+        define content_opt: Optional<String> as read string from file in_path or else nothing
+        if content_opt is nothing:
+            print error "Error: cannot read source file: " + in_path
+            exit with code 1
+
+        define content: String as value of content_opt
+        define tokens: List<Token> as tokenize(content)
+        if token_has_error(tokens):
+            print error token_error_message(tokens)
+            exit with code 1
+
+        define tree_opt: Optional<Node> as parse_source(content)
+        if tree_opt is nothing:
+            print error "Error: failed to parse " + in_path
+            exit with code 1
+
+        define tree: Node as value of tree_opt
+        if argc == 3:
+            call emit_tree_text(tree)
+            exit with code 0
+
+        define out_path: String as argument 4
+        write tree as json to file out_path
+        exit with code 0
+
+    if cmd == "emit":
+        if argc != 3 and argc != 5:
+            print error "Usage: memetools emit <file.meme> [-o out.meme]"
+            exit with code 1
+        if argc == 5 and argument 3 != "-o":
+            print error "Usage: memetools emit <file.meme> [-o out.meme]"
+            exit with code 1
+
+        define in_path: String as argument 2
+        define content_opt: Optional<String> as read string from file in_path or else nothing
+        if content_opt is nothing:
+            print error "Error: cannot read source file: " + in_path
+            exit with code 1
+
+        define content: String as value of content_opt
+        define tokens: List<Token> as tokenize(content)
+        if token_has_error(tokens):
+            print error token_error_message(tokens)
+            exit with code 1
+
+        define tree_opt: Optional<Node> as parse_source(content)
+        if tree_opt is nothing:
+            print error "Error: failed to parse " + in_path
+            exit with code 1
+
+        define tree: Node as value of tree_opt
+        define emitted: String as emit_program(tree)
+        if argc == 3:
+            if length of string emitted > 0:
+                print emitted
+            exit with code 0
+
+        define out_path: String as argument 4
+        if length of string emitted > 0:
+            write file out_path with (emitted + "\n")
+        else:
+            write file out_path with ""
+        exit with code 0
+
+    if cmd == "hash":
+        if argc != 3:
+            print error "Usage: memetools hash <file.meme>"
+            exit with code 1
+
+        define in_path: String as argument 2
+        define content_opt: Optional<String> as read string from file in_path or else nothing
+        if content_opt is nothing:
+            print error "Error: cannot read source file: " + in_path
+            exit with code 1
+
+        define content: String as value of content_opt
+        define h: String as compute_source_hash(content)
+        print h
+        exit with code 0
+
+    if cmd == "check":
+        if argc < 3:
+            print error "Usage: memetools check <file.meme> [...]"
+            exit with code 1
+
+        define all_fresh: Bool as true
+        for i from 2 to argc - 1:
+            define file_path: String as argument i
+            define res: CheckResult as check_file(file_path)
+            if length of string res.detail > 0:
+                print file_path + ": " + res.verdict + " " + res.detail
+            else:
+                print file_path + ": " + res.verdict
+
+            if not res.is_fresh:
+                set all_fresh to false
+
+        if all_fresh:
+            exit with code 0
+        else:
+            exit with code 1
+
+call run_cli()

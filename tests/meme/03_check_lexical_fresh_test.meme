@@ -1,0 +1,91 @@
+use ../../hasher
+use ../../checker
+
+test layout_edit_spaces_to_tabs_lexical_fresh_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme.lock"
+    define tmp_src: String as "tests/tmp/538_recursive_optional.meme"
+    define tmp_lock: String as "tests/tmp/538_recursive_optional.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define modified_text: String as replace "    " with "\t" in orig_text
+
+    write file tmp_src with modified_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "LEXICAL-FRESH"
+    assert res.detail == "[layout-only changes]"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test layout_edit_blank_lines_lexical_fresh_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme.lock"
+    define tmp_src: String as "tests/tmp/541_sha256.meme"
+    define tmp_lock: String as "tests/tmp/541_sha256.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define modified_text: String as "\n\n" + orig_text + "\n\n"
+
+    write file tmp_src with modified_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "LEXICAL-FRESH"
+    assert res.detail == "[layout-only changes]"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test comments_added_hash_drifted_but_tokens_match_lexical_fresh_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme.lock"
+    define tmp_src: String as "tests/tmp/538_recursive_optional.meme"
+    define tmp_lock: String as "tests/tmp/538_recursive_optional.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define commented_text: String as "# Top-level file comment\n" + orig_text + "\n# Trailing comment\n"
+
+    define orig_hash: String as compute_source_hash(orig_text)
+    define new_hash: String as compute_source_hash(commented_text)
+
+    # Assert Fact 1: Hash drifted because hash covers comments
+    assert new_hash != orig_hash
+
+    write file tmp_src with commented_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+
+    # Assert Fact 2: Comment-filtered token stream matches -> LEXICAL-FRESH
+    assert res.verdict == "LEXICAL-FRESH"
+    assert res.detail == "[layout-only changes]"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock

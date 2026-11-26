@@ -1,0 +1,79 @@
+use ../../checker
+
+test substantive_identifier_change_drifted_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme.lock"
+    define tmp_src: String as "tests/tmp/538_recursive_optional.meme"
+    define tmp_lock: String as "tests/tmp/538_recursive_optional.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define modified_text: String as replace "count_nodes" with "count_my_nodes" in orig_text
+
+    write file tmp_src with modified_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "DRIFTED"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test substantive_literal_change_drifted_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme.lock"
+    define tmp_src: String as "tests/tmp/541_sha256.meme"
+    define tmp_lock: String as "tests/tmp/541_sha256.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define modified_text: String as replace "\"hello memelang\"" with "\"hello world\"" in orig_text
+
+    write file tmp_src with modified_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "DRIFTED"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test substantive_statement_added_drifted_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme.lock"
+    define tmp_src: String as "tests/tmp/541_sha256.meme"
+    define tmp_lock: String as "tests/tmp/541_sha256.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    define orig_text: String as value of src_opt
+    define modified_text: String as orig_text + "\nprint \"added statement\"\n"
+
+    write file tmp_src with modified_text
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "DRIFTED"
+    assert res.is_fresh == false
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock

@@ -1,0 +1,112 @@
+use ../../hasher
+use ../../checker
+
+test multi_file_all_fresh_aggregate_test:
+    create directory "tests/tmp"
+    define f1_src: String as "tests/tmp/mf1.meme"
+    define f1_lock: String as "tests/tmp/mf1.meme.lock"
+    define f2_src: String as "tests/tmp/mf2.meme"
+    define f2_lock: String as "tests/tmp/mf2.meme.lock"
+
+    define code1: String as "define a: Int as 10\n"
+    define code2: String as "define b: Int as 20\n"
+    write file f1_src with code1
+    write file f2_src with code2
+
+    define hash1: String as compute_source_hash(code1)
+    define hash2: String as compute_source_hash(code2)
+
+    define entries1: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries1["tests/tmp/mf1.meme"] to LockEntry(source_sha256=hash1, provider="heuristic", canonical_meme=code1)
+    define lf1: LockFile as LockFile(lockfile_version=1, entries=entries1)
+    write lf1 as json to file f1_lock
+
+    define entries2: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries2["tests/tmp/mf2.meme"] to LockEntry(source_sha256=hash2, provider="heuristic", canonical_meme=code2)
+    define lf2: LockFile as LockFile(lockfile_version=1, entries=entries2)
+    write lf2 as json to file f2_lock
+
+    define r1: CheckResult as check_file(f1_src)
+    define r2: CheckResult as check_file(f2_src)
+
+    assert r1.verdict == "LOCKED-FRESH"
+    assert r1.is_fresh == true
+    assert r2.verdict == "LOCKED-FRESH"
+    assert r2.is_fresh == true
+
+    define all_fresh: Bool as r1.is_fresh and r2.is_fresh
+    assert all_fresh == true
+
+    delete file f1_src
+    delete file f1_lock
+    delete file f2_src
+    delete file f2_lock
+
+test multi_file_mixed_verdicts_aggregate_test:
+    create directory "tests/tmp"
+    define f1_src: String as "tests/tmp/mix1.meme"
+    define f1_lock: String as "tests/tmp/mix1.meme.lock"
+    define f2_src: String as "tests/tmp/mix2.meme"
+    define f2_lock: String as "tests/tmp/mix2.meme.lock"
+    define f3_src: String as "tests/tmp/mix3.meme"
+    define f3_lock: String as "tests/tmp/mix3.meme.lock"
+    define f4_src: String as "tests/tmp/mix4.meme"
+
+    define code1: String as "define a: Int as 10\n"
+    define code2_orig: String as "define b: Int as 20\n"
+    define code2_modified: String as "\n\ndefine b: Int as 20\n\n"
+    define code3_orig: String as "define c: Int as 30\n"
+    define code3_drifted: String as "define c: Int as 999\n"
+    define code4: String as "define d: Int as 40\n"
+
+    write file f1_src with code1
+    write file f2_src with code2_modified
+    write file f3_src with code3_drifted
+    write file f4_src with code4
+
+    define hash1: String as compute_source_hash(code1)
+    define hash2: String as compute_source_hash(code2_orig)
+    define hash3: String as compute_source_hash(code3_orig)
+
+    define entries1: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries1["tests/tmp/mix1.meme"] to LockEntry(source_sha256=hash1, provider="heuristic", canonical_meme=code1)
+    define lf1: LockFile as LockFile(lockfile_version=1, entries=entries1)
+    write lf1 as json to file f1_lock
+
+    define entries2: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries2["tests/tmp/mix2.meme"] to LockEntry(source_sha256=hash2, provider="heuristic", canonical_meme=code2_orig)
+    define lf2: LockFile as LockFile(lockfile_version=1, entries=entries2)
+    write lf2 as json to file f2_lock
+
+    define entries3: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries3["tests/tmp/mix3.meme"] to LockEntry(source_sha256=hash3, provider="heuristic", canonical_meme=code3_orig)
+    define lf3: LockFile as LockFile(lockfile_version=1, entries=entries3)
+    write lf3 as json to file f3_lock
+
+    define r1: CheckResult as check_file(f1_src)
+    define r2: CheckResult as check_file(f2_src)
+    define r3: CheckResult as check_file(f3_src)
+    define r4: CheckResult as check_file(f4_src)
+
+    assert r1.verdict == "LOCKED-FRESH"
+    assert r1.is_fresh == true
+
+    assert r2.verdict == "LEXICAL-FRESH"
+    assert r2.is_fresh == false
+
+    assert r3.verdict == "DRIFTED"
+    assert r3.is_fresh == false
+
+    assert r4.verdict == "NO LOCK"
+    assert r4.is_fresh == false
+
+    define all_fresh: Bool as r1.is_fresh and r2.is_fresh and r3.is_fresh and r4.is_fresh
+    assert all_fresh == false
+
+    delete file f1_src
+    delete file f1_lock
+    delete file f2_src
+    delete file f2_lock
+    delete file f3_src
+    delete file f3_lock
+    delete file f4_src

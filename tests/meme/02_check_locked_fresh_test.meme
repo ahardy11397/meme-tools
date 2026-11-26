@@ -1,0 +1,67 @@
+use ../../checker
+
+test real_fixture_538_locked_fresh_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/538_recursive_optional.meme.lock"
+    define tmp_src: String as "tests/tmp/538_recursive_optional.meme"
+    define tmp_lock: String as "tests/tmp/538_recursive_optional.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    write file tmp_src with value of src_opt
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "LOCKED-FRESH"
+    assert res.is_fresh == true
+    assert res.has_error == false
+    assert length of string res.error_message == 0
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test real_fixture_541_locked_fresh_test:
+    create directory "tests/tmp"
+    define orig_src: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme"
+    define orig_lock: String as "/mnt/ssd/projects/meme/examples/advanced/541_sha256.meme.lock"
+    define tmp_src: String as "tests/tmp/541_sha256.meme"
+    define tmp_lock: String as "tests/tmp/541_sha256.meme.lock"
+
+    define src_opt: Optional<String> as read string from file orig_src or else nothing
+    define lock_opt: Optional<String> as read string from file orig_lock or else nothing
+    assert src_opt is not nothing
+    assert lock_opt is not nothing
+
+    write file tmp_src with value of src_opt
+    write file tmp_lock with value of lock_opt
+
+    define res: CheckResult as check_file(tmp_src)
+    assert res.verdict == "LOCKED-FRESH"
+    assert res.is_fresh == true
+    assert res.has_error == false
+
+    delete file tmp_src
+    delete file tmp_lock
+
+test suffix_key_matching_rules_test:
+    define entries: Map<String, LockEntry> as empty Map<String, LockEntry>
+    define e: LockEntry as LockEntry(source_sha256="abc", provider="heuristic", canonical_meme="")
+    set entries["demo.meme"] to e
+    set entries["sub/demo.meme"] to e
+    set entries["pkg/sub/demo.meme"] to e
+
+    define res_ambig: MatchResult as find_matching_key(entries, "demo.meme")
+    assert res_ambig.found == true
+    assert res_ambig.ambiguous == true
+    assert res_ambig.key == "pkg/sub/demo.meme"
+
+    define entries_single: Map<String, LockEntry> as empty Map<String, LockEntry>
+    set entries_single["examples/advanced/538_recursive_optional.meme"] to e
+    define res_single: MatchResult as find_matching_key(entries_single, "538_recursive_optional.meme")
+    assert res_single.found == true
+    assert res_single.ambiguous == false
+    assert res_single.key == "examples/advanced/538_recursive_optional.meme"
