@@ -1,0 +1,782 @@
+# expr.meme - Clone-light single-pass expression parser
+use ast
+use lexer
+
+record ParseExprResult:
+    node: Node
+    next_pos: Int
+    has_error: Bool
+
+function tokens_to_string(tokens: List<Token>, start_pos: Int, end_pos: Int) -> String:
+    define res: String as ""
+    for i from start_pos to end_pos - 1:
+        define tok: Token as tokens[i]
+        if i > start_pos:
+            set res to res + " "
+        set res to res + tok.value
+    return res
+
+function type_tokens_to_string(tokens: List<Token>, start_pos: Int, end_pos: Int) -> String:
+    define res: String as ""
+    for i from start_pos to end_pos - 1:
+        define val: String as tokens[i].value
+        if i > start_pos:
+            define prev: String as tokens[i - 1].value
+            if val != "<" and val != ">" and val != "," and prev != "<" and prev != ",":
+                set res to res + " "
+            if prev == ",":
+                set res to res + " "
+        set res to res + val
+    return res
+
+function find_matching_paren(tokens: List<Token>, open_pos: Int, end_pos: Int) -> Int:
+    define depth: Int as 0
+    for i from open_pos to end_pos - 1:
+        define val: String as tokens[i].value
+        if val == "(":
+            set depth to depth + 1
+        else if val == ")":
+            set depth to depth - 1
+            if depth == 0:
+                return i
+    return -1
+
+function parse_expr_list(tokens: List<Token>, start_pos: Int, end_pos: Int) -> List<Node>:
+    define result: List<Node> as empty List<Node>
+    if start_pos >= end_pos:
+        return result
+    define p_depth: Int as 0
+    define b_depth: Int as 0
+    define cur_start: Int as start_pos
+    for i from start_pos to end_pos - 1:
+        define val: String as tokens[i].value
+        if val == "(":
+            set p_depth to p_depth + 1
+        else if val == ")":
+            set p_depth to p_depth - 1
+        else if val == "[":
+            set b_depth to b_depth + 1
+        else if val == "]":
+            set b_depth to b_depth - 1
+        else if val == "," and p_depth == 0 and b_depth == 0:
+            if i > cur_start:
+                define sub_res: ParseExprResult as parse_expr(tokens, cur_start, i)
+                append sub_res.node to result
+            set cur_start to i + 1
+    if cur_start < end_pos:
+        define sub_res: ParseExprResult as parse_expr(tokens, cur_start, end_pos)
+        append sub_res.node to result
+    return result
+
+function parse_single_record_init(tokens: List<Token>, start_pos: Int, end_pos: Int) -> Node:
+    define tok0: Token as tokens[start_pos]
+    if start_pos + 1 < end_pos:
+        if tokens[start_pos + 1].value == "=":
+            define field_name: String as tok0.value
+            define expr_res: ParseExprResult as parse_expr(tokens, start_pos + 2, end_pos)
+            return make_wrapper("field_init", field_name, tok0.line, expr_res.node)
+    define fallback: ParseExprResult as parse_expr(tokens, start_pos, end_pos)
+    return fallback.node
+
+function parse_record_inits(tokens: List<Token>, start_pos: Int, end_pos: Int) -> List<Node>:
+    define result: List<Node> as empty List<Node>
+    if start_pos >= end_pos:
+        return result
+    define p_depth: Int as 0
+    define b_depth: Int as 0
+    define cur_start: Int as start_pos
+    for i from start_pos to end_pos - 1:
+        define val: String as tokens[i].value
+        if val == "(":
+            set p_depth to p_depth + 1
+        else if val == ")":
+            set p_depth to p_depth - 1
+        else if val == "[":
+            set b_depth to b_depth + 1
+        else if val == "]":
+            set b_depth to b_depth - 1
+        else if val == "," and p_depth == 0 and b_depth == 0:
+            if i > cur_start:
+                define item_node: Node as parse_single_record_init(tokens, cur_start, i)
+                append item_node to result
+            set cur_start to i + 1
+    if cur_start < end_pos:
+        define item_node: Node as parse_single_record_init(tokens, cur_start, end_pos)
+        append item_node to result
+    return result
+
+function parse_empty_collection(tokens: List<Token>, pos: Int, end_pos: Int) -> ParseExprResult:
+    define tok0: Token as tokens[pos]
+    if pos + 1 >= end_pos:
+        return ParseExprResult(node=make_leaf("empty_collection", "", tok0.line), next_pos=pos + 1, has_error=false)
+    define tok1: Token as tokens[pos + 1]
+    if tok1.value == "set" and pos + 3 < end_pos and tokens[pos + 2].value == "of":
+        define type_name: String as tokens[pos + 3].value
+        return ParseExprResult(node=make_leaf("empty_collection", "Set<" + type_name + ">", tok0.line), next_pos=pos + 4, has_error=false)
+    if pos + 2 < end_pos and tokens[pos + 2].value == "<":
+        define depth: Int as 0
+        define close_pos: Int as -1
+        for i from pos + 2 to end_pos - 1:
+            if tokens[i].value == "<":
+                set depth to depth + 1
+            else if tokens[i].value == ">":
+                set depth to depth - 1
+                if depth == 0:
+                    set close_pos to i
+                    break
+        if close_pos != -1:
+            define type_str: String as type_tokens_to_string(tokens, pos + 1, close_pos + 1)
+            return ParseExprResult(node=make_leaf("empty_collection", type_str, tok0.line), next_pos=close_pos + 1, has_error=false)
+    define type_str: String as tok1.value
+    return ParseExprResult(node=make_leaf("empty_collection", type_str, tok0.line), next_pos=pos + 2, has_error=false)
+
+function parse_postfix_operand(tokens: List<Token>, start_pos: Int, end_pos: Int, paren_map: List<Int>, base_pos: Int) -> ParseExprResult:
+    if start_pos >= end_pos:
+        define empty_list: List<Node> as empty List<Node>
+        return ParseExprResult(node=Node(kind="empty", value="", line=1, child=nothing, children=empty_list), next_pos=start_pos, has_error=true)
+
+    define cur_pos: Int as start_pos
+    define unary_kinds: List<String> as empty List<String>
+    define unary_vals: List<String> as empty List<String>
+    define unary_lines: List<Int> as empty List<Int>
+
+    while cur_pos < end_pos:
+        define u_tok: Token as tokens[cur_pos]
+        if u_tok.value == "-" or u_tok.value == "not":
+            append "unary_op" to unary_kinds
+            append u_tok.value to unary_vals
+            append u_tok.line to unary_lines
+            set cur_pos to cur_pos + 1
+        else if u_tok.value == "optional":
+            append "optional" to unary_kinds
+            append "" to unary_vals
+            append u_tok.line to unary_lines
+            set cur_pos to cur_pos + 1
+        else if u_tok.value == "value" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+            append "value_of" to unary_kinds
+            append "" to unary_vals
+            append u_tok.line to unary_lines
+            set cur_pos to cur_pos + 2
+        else if u_tok.value == "text" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+            append "text_of" to unary_kinds
+            append "" to unary_vals
+            append u_tok.line to unary_lines
+            set cur_pos to cur_pos + 2
+        else if u_tok.value == "is" and cur_pos + 1 < end_pos and (tokens[cur_pos + 1].value == "digit" or tokens[cur_pos + 1].value == "letter" or tokens[cur_pos + 1].value == "upper" or tokens[cur_pos + 1].value == "lower"):
+            append ("is_" + tokens[cur_pos + 1].value) to unary_kinds
+            append "" to unary_vals
+            append u_tok.line to unary_lines
+            set cur_pos to cur_pos + 2
+        else:
+            break
+
+    if cur_pos >= end_pos:
+        define empty_list: List<Node> as empty List<Node>
+        return ParseExprResult(node=Node(kind="empty", value="", line=1, child=nothing, children=empty_list), next_pos=cur_pos, has_error=true)
+
+    define tok: Token as tokens[cur_pos]
+    define prim_node: Node as make_leaf("empty", "", tok.line)
+
+    if tok.kind == "int":
+        set prim_node to make_leaf("int", tok.value, tok.line)
+        set cur_pos to cur_pos + 1
+    else if tok.kind == "float":
+        set prim_node to make_leaf("float", tok.value, tok.line)
+        set cur_pos to cur_pos + 1
+    else if tok.kind == "string":
+        set prim_node to make_leaf("string", tok.value, tok.line)
+        set cur_pos to cur_pos + 1
+    else if tok.value == "nothing":
+        set prim_node to make_leaf("nothing", "nothing", tok.line)
+        set cur_pos to cur_pos + 1
+    else if tok.value == "(":
+        define offset: Int as cur_pos - base_pos
+        if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+            define r_paren: Int as paren_map[offset]
+            define inner_res: ParseExprResult as parse_expr(tokens, cur_pos + 1, r_paren)
+            set prim_node to inner_res.node
+            set cur_pos to r_paren + 1
+        else:
+            set cur_pos to cur_pos + 1
+    else if tok.value == "[":
+        define offset: Int as cur_pos - base_pos
+        if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+            define r_bracket: Int as paren_map[offset]
+            define elements: List<Node> as parse_expr_list(tokens, cur_pos + 1, r_bracket)
+            set prim_node to make_block("list", "", tok.line, elements)
+            set cur_pos to r_bracket + 1
+        else:
+            set cur_pos to cur_pos + 1
+    else if tok.value == "empty":
+        define emp_res: ParseExprResult as parse_empty_collection(tokens, cur_pos, end_pos)
+        set prim_node to emp_res.node
+        set cur_pos to emp_res.next_pos
+    else if tok.kind == "identifier" or tok.value == "true" or tok.value == "false" or tok.value == "value" or tok.value == "the":
+        set prim_node to make_leaf("identifier", tok.value, tok.line)
+        set cur_pos to cur_pos + 1
+    else:
+        define raw_text: String as tokens_to_string(tokens, cur_pos, cur_pos + 1)
+        set prim_node to make_opaque(raw_text, tok.line)
+        set cur_pos to cur_pos + 1
+
+    # Postfix chain
+    while cur_pos < end_pos:
+        define ptok: Token as tokens[cur_pos]
+        if ptok.value == "[":
+            define offset: Int as cur_pos - base_pos
+            if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                define r_bracket: Int as paren_map[offset]
+                define idx_res: ParseExprResult as parse_expr(tokens, cur_pos + 1, r_bracket)
+                define ch_list: List<Node> as empty List<Node>
+                append idx_res.node to ch_list
+                set prim_node to make_node("index", "", ptok.line, optional prim_node, ch_list)
+                set cur_pos to r_bracket + 1
+            else:
+                break
+        else if ptok.value == ".":
+            if cur_pos + 1 < end_pos:
+                define field_tok: Token as tokens[cur_pos + 1]
+                define empty_list: List<Node> as empty List<Node>
+                set prim_node to make_node("field_access", field_tok.value, ptok.line, optional prim_node, empty_list)
+                set cur_pos to cur_pos + 2
+            else:
+                break
+        else if ptok.value == "(" and prim_node.kind == "identifier":
+            define offset: Int as cur_pos - base_pos
+            if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                define r_paren: Int as paren_map[offset]
+                if cur_pos + 2 < r_paren and tokens[cur_pos + 2].value == "=":
+                    define inits: List<Node> as parse_record_inits(tokens, cur_pos + 1, r_paren)
+                    set prim_node to make_block("record_init", prim_node.value, ptok.line, inits)
+                else:
+                    define args: List<Node> as parse_expr_list(tokens, cur_pos + 1, r_paren)
+                    set prim_node to make_block("call", prim_node.value, ptok.line, args)
+                set cur_pos to r_paren + 1
+            else:
+                break
+        else:
+            break
+
+    # Apply unary operators
+    while length of unary_kinds > 0:
+        define u_idx: Int as length of unary_kinds - 1
+        define u_kind: String as unary_kinds[u_idx]
+        define u_val: String as unary_vals[u_idx]
+        define u_line: Int as unary_lines[u_idx]
+        remove last item from unary_kinds
+        remove last item from unary_vals
+        remove last item from unary_lines
+        set prim_node to make_wrapper(u_kind, u_val, u_line, prim_node)
+
+    return ParseExprResult(node=prim_node, next_pos=cur_pos, has_error=false)
+
+function parse_expr(tokens: List<Token>, pos: Int, end_pos: Int) -> ParseExprResult:
+    if pos >= end_pos:
+        define empty_list: List<Node> as empty List<Node>
+        return ParseExprResult(node=Node(kind="empty", value="", line=1, child=nothing, children=empty_list), next_pos=pos, has_error=true)
+
+    # 1. Precompute matching parens and brackets for this expression span
+    define span_len: Int as end_pos - pos
+    define paren_map: List<Int> as empty List<Int>
+    for i from 0 to span_len:
+        append -1 to paren_map
+
+    define p_stack: List<Int> as empty List<Int>
+    define b_stack: List<Int> as empty List<Int>
+    for i from pos to end_pos - 1:
+        define v: String as tokens[i].value
+        if v == "(":
+            append (i - pos) to p_stack
+        else if v == ")":
+            if length of p_stack > 0:
+                define open_off: Int as p_stack[length of p_stack - 1]
+                remove last item from p_stack
+                set paren_map[open_off] to i
+        else if v == "[":
+            append (i - pos) to b_stack
+        else if v == "]":
+            if length of b_stack > 0:
+                define open_off: Int as b_stack[length of b_stack - 1]
+                remove last item from b_stack
+                set paren_map[open_off] to i
+
+    define node_stack: List<Node> as empty List<Node>
+    define op_stack: List<String> as empty List<String>
+    append "" to op_stack
+    remove last item from op_stack
+    define prec_stack: List<Int> as empty List<Int>
+    append 0 to prec_stack
+    remove last item from prec_stack
+    define line_stack: List<Int> as empty List<Int>
+    append 0 to line_stack
+    remove last item from line_stack
+
+    define cur_pos: Int as pos
+    define expecting_operand: Bool as true
+
+    while cur_pos < end_pos:
+        if expecting_operand:
+            # Consume prefix unary operators
+            define unary_kinds: List<String> as empty List<String>
+            define unary_vals: List<String> as empty List<String>
+            define unary_lines: List<Int> as empty List<Int>
+
+            while cur_pos < end_pos:
+                define u_tok: Token as tokens[cur_pos]
+                if u_tok.value == "-" or u_tok.value == "not":
+                    append "unary_op" to unary_kinds
+                    append u_tok.value to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 1
+                else if u_tok.value == "optional":
+                    append "optional" to unary_kinds
+                    append "" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 1
+                else if u_tok.value == "value" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+                    append "value_of" to unary_kinds
+                    append "" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 2
+                else if u_tok.value == "text" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+                    append "text_of" to unary_kinds
+                    append "" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 2
+                else if u_tok.value == "is" and cur_pos + 1 < end_pos and (tokens[cur_pos + 1].value == "digit" or tokens[cur_pos + 1].value == "letter" or tokens[cur_pos + 1].value == "upper" or tokens[cur_pos + 1].value == "lower"):
+                    append ("is_" + tokens[cur_pos + 1].value) to unary_kinds
+                    append "" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 2
+                else if u_tok.value == "length" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+                    append "builtin" to unary_kinds
+                    append "length" to unary_vals
+                    append u_tok.line to unary_lines
+                    if cur_pos + 2 < end_pos and tokens[cur_pos + 2].value == "string":
+                        set cur_pos to cur_pos + 3
+                    else:
+                        set cur_pos to cur_pos + 2
+                else if u_tok.value == "argument" and (cur_pos + 1 >= end_pos or tokens[cur_pos + 1].value != "count"):
+                    append "builtin" to unary_kinds
+                    append "argument" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 1
+                else if u_tok.value == "sha256" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+                    append "builtin" to unary_kinds
+                    append "sha256" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 2
+                else if u_tok.value == "read" and cur_pos + 3 < end_pos and tokens[cur_pos + 1].value == "string" and tokens[cur_pos + 2].value == "from" and tokens[cur_pos + 3].value == "file":
+                    append "builtin" to unary_kinds
+                    append "read_file" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 4
+                else if u_tok.value == "file" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "exists":
+                    append "builtin" to unary_kinds
+                    append "file_exists" to unary_vals
+                    append u_tok.line to unary_lines
+                    set cur_pos to cur_pos + 2
+                else:
+                    break
+
+            if cur_pos >= end_pos:
+                break
+
+            # Parse primary
+            define tok: Token as tokens[cur_pos]
+            define prim_node: Node as make_leaf("empty", "", tok.line)
+
+            if tok.kind == "int":
+                set prim_node to make_leaf("int", tok.value, tok.line)
+                set cur_pos to cur_pos + 1
+            else if tok.kind == "float":
+                set prim_node to make_leaf("float", tok.value, tok.line)
+                set cur_pos to cur_pos + 1
+            else if tok.kind == "string":
+                set prim_node to make_leaf("string", tok.value, tok.line)
+                set cur_pos to cur_pos + 1
+            else if tok.value == "nothing":
+                set prim_node to make_leaf("nothing", "nothing", tok.line)
+                set cur_pos to cur_pos + 1
+            else if tok.value == "(":
+                define offset: Int as cur_pos - pos
+                if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                    define r_paren: Int as paren_map[offset]
+                    define inner_res: ParseExprResult as parse_expr(tokens, cur_pos + 1, r_paren)
+                    set prim_node to inner_res.node
+                    set cur_pos to r_paren + 1
+                else:
+                    set cur_pos to cur_pos + 1
+            else if tok.value == "[":
+                define offset: Int as cur_pos - pos
+                if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                    define r_bracket: Int as paren_map[offset]
+                    define elements: List<Node> as parse_expr_list(tokens, cur_pos + 1, r_bracket)
+                    set prim_node to make_block("list", "", tok.line, elements)
+                    set cur_pos to r_bracket + 1
+                else:
+                    set cur_pos to cur_pos + 1
+            else if tok.value == "empty":
+                define emp_res: ParseExprResult as parse_empty_collection(tokens, cur_pos, end_pos)
+                set prim_node to emp_res.node
+                set cur_pos to emp_res.next_pos
+            else if tok.value == "argument" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "count":
+                set prim_node to make_leaf("builtin", "argument_count", tok.line)
+                set cur_pos to cur_pos + 2
+            else if tok.value == "char" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "at":
+                define of_pos: Int as -1
+                define scan_i: Int as cur_pos + 2
+                while scan_i < end_pos:
+                    define scan_off: Int as scan_i - pos
+                    if scan_off >= 0 and scan_off < length of paren_map and paren_map[scan_off] != -1:
+                        set scan_i to paren_map[scan_off] + 1
+                    else:
+                        if tokens[scan_i].value == "of":
+                            set of_pos to scan_i
+                            break
+                        set scan_i to scan_i + 1
+                if of_pos != -1:
+                    define i_res: ParseExprResult as parse_expr(tokens, cur_pos + 2, of_pos)
+                    define s_res: ParseExprResult as parse_postfix_operand(tokens, of_pos + 1, end_pos, paren_map, pos)
+                    define ch_list: List<Node> as empty List<Node>
+                    append i_res.node to ch_list
+                    append s_res.node to ch_list
+                    set prim_node to make_block("builtin", "char_at", tok.line, ch_list)
+                    set cur_pos to s_res.next_pos
+            else if tok.value == "slice":
+                define from_pos: Int as -1
+                define to_pos: Int as -1
+                define scan_i: Int as cur_pos + 1
+                while scan_i < end_pos:
+                    define scan_off: Int as scan_i - pos
+                    if scan_off >= 0 and scan_off < length of paren_map and paren_map[scan_off] != -1:
+                        set scan_i to paren_map[scan_off] + 1
+                    else:
+                        if tokens[scan_i].value == "from" and from_pos == -1:
+                            set from_pos to scan_i
+                        else if tokens[scan_i].value == "to" and to_pos == -1:
+                            set to_pos to scan_i
+                        set scan_i to scan_i + 1
+                if from_pos != -1 and to_pos != -1 and from_pos < to_pos:
+                    define s_res: ParseExprResult as parse_expr(tokens, cur_pos + 1, from_pos)
+                    define a_res: ParseExprResult as parse_expr(tokens, from_pos + 1, to_pos)
+                    define b_res: ParseExprResult as parse_postfix_operand(tokens, to_pos + 1, end_pos, paren_map, pos)
+                    define ch_list: List<Node> as empty List<Node>
+                    append s_res.node to ch_list
+                    append a_res.node to ch_list
+                    append b_res.node to ch_list
+                    set prim_node to make_block("builtin", "slice", tok.line, ch_list)
+                    set cur_pos to b_res.next_pos
+            else if tok.value == "index" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "of":
+                define in_pos: Int as -1
+                define scan_i: Int as cur_pos + 2
+                while scan_i < end_pos:
+                    define scan_off: Int as scan_i - pos
+                    if scan_off >= 0 and scan_off < length of paren_map and paren_map[scan_off] != -1:
+                        set scan_i to paren_map[scan_off] + 1
+                    else:
+                        if tokens[scan_i].value == "in":
+                            set in_pos to scan_i
+                            break
+                        set scan_i to scan_i + 1
+                if in_pos != -1:
+                    define x_res: ParseExprResult as parse_expr(tokens, cur_pos + 2, in_pos)
+                    define s_res: ParseExprResult as parse_postfix_operand(tokens, in_pos + 1, end_pos, paren_map, pos)
+                    define ch_list: List<Node> as empty List<Node>
+                    append x_res.node to ch_list
+                    append s_res.node to ch_list
+                    set prim_node to make_block("builtin", "index_of", tok.line, ch_list)
+                    set cur_pos to s_res.next_pos
+            else if tok.value == "read":
+                if cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "json":
+                    if cur_pos + 3 < end_pos and (tokens[cur_pos + 2].value == "record" or tokens[cur_pos + 2].value == "records"):
+                        define rec_name: String as tokens[cur_pos + 3].value
+                        define file_pos: Int as -1
+                        define or_pos: Int as -1
+                        define scan_f: Int as cur_pos + 4
+                        while scan_f < end_pos:
+                            define s_off: Int as scan_f - pos
+                            if s_off >= 0 and s_off < length of paren_map and paren_map[s_off] != -1:
+                                set scan_f to paren_map[s_off] + 1
+                            else:
+                                if tokens[scan_f].value == "file" and file_pos == -1:
+                                    set file_pos to scan_f
+                                else if tokens[scan_f].value == "or" and or_pos == -1:
+                                    set or_pos to scan_f
+                                set scan_f to scan_f + 1
+                        if file_pos != -1 and or_pos != -1 and file_pos < or_pos:
+                            define p_res: ParseExprResult as parse_expr(tokens, file_pos + 1, or_pos)
+                            define d_res: ParseExprResult as parse_postfix_operand(tokens, or_pos + 2, end_pos, paren_map, pos)
+                            define ch_list: List<Node> as empty List<Node>
+                            append p_res.node to ch_list
+                            append d_res.node to ch_list
+                            define b_kind: String as "read_json_record"
+                            if tokens[cur_pos + 2].value == "records":
+                                set b_kind to "read_json_records"
+                            set prim_node to make_block("builtin", b_kind + ": " + rec_name, tok.line, ch_list)
+                            set cur_pos to d_res.next_pos
+                    else if cur_pos + 2 < end_pos and tokens[cur_pos + 2].value == "file":
+                        define as_pos: Int as -1
+                        define or_pos: Int as -1
+                        define scan_a: Int as cur_pos + 3
+                        while scan_a < end_pos:
+                            define s_off: Int as scan_a - pos
+                            if s_off >= 0 and s_off < length of paren_map and paren_map[s_off] != -1:
+                                set scan_a to paren_map[s_off] + 1
+                            else:
+                                if tokens[scan_a].value == "as" and as_pos == -1:
+                                    set as_pos to scan_a
+                                else if tokens[scan_a].value == "or" and or_pos == -1:
+                                    set or_pos to scan_a
+                                set scan_a to scan_a + 1
+                        if as_pos != -1 and or_pos != -1 and as_pos < or_pos:
+                            define p_res: ParseExprResult as parse_expr(tokens, cur_pos + 3, as_pos)
+                            define t_str: String as tokens_to_string(tokens, as_pos + 1, or_pos)
+                            define d_res: ParseExprResult as parse_postfix_operand(tokens, or_pos + 2, end_pos, paren_map, pos)
+                            define ch_list: List<Node> as empty List<Node>
+                            append p_res.node to ch_list
+                            append d_res.node to ch_list
+                            set prim_node to make_block("builtin", "read_json_file: " + t_str, tok.line, ch_list)
+                            set cur_pos to d_res.next_pos
+                else if cur_pos + 1 < end_pos:
+                    define type_val: String as tokens[cur_pos + 1].value
+                    set prim_node to make_leaf("builtin", "read " + type_val, tok.line)
+                    set cur_pos to cur_pos + 2
+            else if tok.kind == "identifier" or tok.value == "true" or tok.value == "false" or tok.value == "value" or tok.value == "the":
+                set prim_node to make_leaf("identifier", tok.value, tok.line)
+                set cur_pos to cur_pos + 1
+            else:
+                # Opaque fallback at primary level
+                define span_end: Int as cur_pos + 1
+                define p_depth: Int as 0
+                define b_depth: Int as 0
+                for i from cur_pos to end_pos - 1:
+                    define val: String as tokens[i].value
+                    if val == "(":
+                        set p_depth to p_depth + 1
+                    else if val == ")":
+                        if p_depth > 0:
+                            set p_depth to p_depth - 1
+                        else:
+                            set span_end to i
+                            break
+                    else if val == "[":
+                        set b_depth to b_depth + 1
+                    else if val == "]":
+                        if b_depth > 0:
+                            set b_depth to b_depth - 1
+                        else:
+                            set span_end to i
+                            break
+                    else if val == "," and p_depth == 0 and b_depth == 0:
+                        set span_end to i
+                        break
+                    set span_end to i + 1
+                define raw_text: String as tokens_to_string(tokens, cur_pos, span_end)
+                set prim_node to make_opaque(raw_text, tok.line)
+                set cur_pos to span_end
+
+            # Postfix chain
+            while cur_pos < end_pos:
+                define ptok: Token as tokens[cur_pos]
+                if ptok.value == "[":
+                    define offset: Int as cur_pos - pos
+                    if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                        define r_bracket: Int as paren_map[offset]
+                        define idx_res: ParseExprResult as parse_expr(tokens, cur_pos + 1, r_bracket)
+                        define ch_list: List<Node> as empty List<Node>
+                        append idx_res.node to ch_list
+                        set prim_node to make_node("index", "", ptok.line, optional prim_node, ch_list)
+                        set cur_pos to r_bracket + 1
+                    else:
+                        break
+                else if ptok.value == ".":
+                    if cur_pos + 1 < end_pos:
+                        define field_tok: Token as tokens[cur_pos + 1]
+                        define empty_list: List<Node> as empty List<Node>
+                        set prim_node to make_node("field_access", field_tok.value, ptok.line, optional prim_node, empty_list)
+                        set cur_pos to cur_pos + 2
+                    else:
+                        break
+                else if ptok.value == "(" and prim_node.kind == "identifier":
+                    define offset: Int as cur_pos - pos
+                    if offset >= 0 and offset < length of paren_map and paren_map[offset] != -1:
+                        define r_paren: Int as paren_map[offset]
+                        if cur_pos + 2 < r_paren and tokens[cur_pos + 2].value == "=":
+                            define inits: List<Node> as parse_record_inits(tokens, cur_pos + 1, r_paren)
+                            set prim_node to make_block("record_init", prim_node.value, ptok.line, inits)
+                        else:
+                            define args: List<Node> as parse_expr_list(tokens, cur_pos + 1, r_paren)
+                            set prim_node to make_block("call", prim_node.value, ptok.line, args)
+                        set cur_pos to r_paren + 1
+                    else:
+                        break
+                else:
+                    break
+
+            # Apply unary operators
+            while length of unary_kinds > 0:
+                define u_idx: Int as length of unary_kinds - 1
+                define u_kind: String as unary_kinds[u_idx]
+                define u_val: String as unary_vals[u_idx]
+                define u_line: Int as unary_lines[u_idx]
+                remove last item from unary_kinds
+                remove last item from unary_vals
+                remove last item from unary_lines
+                set prim_node to make_wrapper(u_kind, u_val, u_line, prim_node)
+
+            append prim_node to node_stack
+            set expecting_operand to false
+
+        else:
+            # Infix position
+            define tok: Token as tokens[cur_pos]
+
+            # Comparison postfix: is not nothing / is nothing
+            if tok.value == "is" and cur_pos + 2 < end_pos and tokens[cur_pos + 1].value == "not" and tokens[cur_pos + 2].value == "nothing":
+                while length of prec_stack > 0:
+                    define top_idx: Int as length of prec_stack - 1
+                    if prec_stack[top_idx] >= 3:
+                        define top_op: String as op_stack[top_idx]
+                        define top_line: Int as line_stack[top_idx]
+                        remove last item from op_stack
+                        remove last item from prec_stack
+                        remove last item from line_stack
+                        define rhs_n: Int as length of node_stack - 1
+                        define rhs: Node as node_stack[rhs_n]
+                        remove last item from node_stack
+                        define lhs_n: Int as length of node_stack - 1
+                        define lhs: Node as node_stack[lhs_n]
+                        remove last item from node_stack
+                        define children: List<Node> as empty List<Node>
+                        append lhs to children
+                        append rhs to children
+                        define bin_node: Node as make_block("binary_op", top_op, top_line, children)
+                        append bin_node to node_stack
+                    else:
+                        break
+                define last_n: Int as length of node_stack - 1
+                define top_node: Node as node_stack[last_n]
+                remove last item from node_stack
+                define empty_list: List<Node> as empty List<Node>
+                define cmp_node: Node as make_node("comparison", "is not nothing", tok.line, optional top_node, empty_list)
+                append cmp_node to node_stack
+                set cur_pos to cur_pos + 3
+
+            else if tok.value == "is" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "nothing":
+                while length of prec_stack > 0:
+                    define top_idx: Int as length of prec_stack - 1
+                    if prec_stack[top_idx] >= 3:
+                        define top_op: String as op_stack[top_idx]
+                        define top_line: Int as line_stack[top_idx]
+                        remove last item from op_stack
+                        remove last item from prec_stack
+                        remove last item from line_stack
+                        define rhs_n: Int as length of node_stack - 1
+                        define rhs: Node as node_stack[rhs_n]
+                        remove last item from node_stack
+                        define lhs_n: Int as length of node_stack - 1
+                        define lhs: Node as node_stack[lhs_n]
+                        remove last item from node_stack
+                        define children: List<Node> as empty List<Node>
+                        append lhs to children
+                        append rhs to children
+                        define bin_node: Node as make_block("binary_op", top_op, top_line, children)
+                        append bin_node to node_stack
+                    else:
+                        break
+                define last_n: Int as length of node_stack - 1
+                define top_node: Node as node_stack[last_n]
+                remove last item from node_stack
+                define empty_list: List<Node> as empty List<Node>
+                define cmp_node: Node as make_node("comparison", "is nothing", tok.line, optional top_node, empty_list)
+                append cmp_node to node_stack
+                set cur_pos to cur_pos + 2
+
+            else:
+                # Binary operator check
+                define op_str: String as ""
+                define op_prec: Int as 0
+                define op_len: Int as 0
+
+                if tok.value == "or" and cur_pos + 1 < end_pos and tokens[cur_pos + 1].value == "else":
+                    set op_str to "or else"
+                    set op_prec to 3
+                    set op_len to 2
+                else if tok.value == "or":
+                    set op_str to "or"
+                    set op_prec to 1
+                    set op_len to 1
+                else if tok.value == "and":
+                    set op_str to "and"
+                    set op_prec to 2
+                    set op_len to 1
+                else if tok.value == "==" or tok.value == "!=" or tok.value == "<" or tok.value == ">" or tok.value == "<=" or tok.value == ">=" or tok.value == "contains":
+                    set op_str to tok.value
+                    set op_prec to 3
+                    set op_len to 1
+                else if tok.value == "+" or tok.value == "-":
+                    set op_str to tok.value
+                    set op_prec to 4
+                    set op_len to 1
+                else if tok.value == "*" or tok.value == "/" or tok.value == "%":
+                    set op_str to tok.value
+                    set op_prec to 5
+                    set op_len to 1
+
+                if op_len > 0:
+                    while length of prec_stack > 0:
+                        define top_idx: Int as length of prec_stack - 1
+                        if prec_stack[top_idx] >= op_prec:
+                            define top_op: String as op_stack[top_idx]
+                            define top_line: Int as line_stack[top_idx]
+                            remove last item from op_stack
+                            remove last item from prec_stack
+                            remove last item from line_stack
+                            define rhs_n: Int as length of node_stack - 1
+                            define rhs: Node as node_stack[rhs_n]
+                            remove last item from node_stack
+                            define lhs_n: Int as length of node_stack - 1
+                            define lhs: Node as node_stack[lhs_n]
+                            remove last item from node_stack
+                            define children: List<Node> as empty List<Node>
+                            append lhs to children
+                            append rhs to children
+                            define bin_node: Node as make_block("binary_op", top_op, top_line, children)
+                            append bin_node to node_stack
+                        else:
+                            break
+                    append op_str to op_stack
+                    append op_prec to prec_stack
+                    append tok.line to line_stack
+                    set cur_pos to cur_pos + op_len
+                    set expecting_operand to true
+                else:
+                    break
+
+    # Drain remaining operators
+    while length of op_stack > 0:
+        define top_idx: Int as length of op_stack - 1
+        define top_op: String as op_stack[top_idx]
+        define top_line: Int as line_stack[top_idx]
+        remove last item from op_stack
+        remove last item from prec_stack
+        remove last item from line_stack
+        if length of node_stack >= 2:
+            define rhs_n: Int as length of node_stack - 1
+            define rhs: Node as node_stack[rhs_n]
+            remove last item from node_stack
+            define lhs_n: Int as length of node_stack - 1
+            define lhs: Node as node_stack[lhs_n]
+            remove last item from node_stack
+            define children: List<Node> as empty List<Node>
+            append lhs to children
+            append rhs to children
+            define bin_node: Node as make_block("binary_op", top_op, top_line, children)
+            append bin_node to node_stack
+
+    if length of node_stack == 0:
+        define empty_list: List<Node> as empty List<Node>
+        return ParseExprResult(node=Node(kind="empty", value="", line=1, child=nothing, children=empty_list), next_pos=cur_pos, has_error=true)
+
+    return ParseExprResult(node=node_stack[0], next_pos=cur_pos, has_error=false)

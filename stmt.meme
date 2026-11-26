@@ -1,0 +1,521 @@
+# stmt.meme - Fast line-based statement and block parser for Memelang
+use ast
+use expr
+use lexer
+
+record Line:
+    tokens: List<Token>
+    line: Int
+    col: Int
+
+record ParseStmtListResult:
+    statements: List<Node>
+    next_pos: Int
+
+function filter_comments(tokens: List<Token>) -> List<Line>:
+    define result: List<Line> as empty List<Line>
+    define cur_tokens: List<Token> as empty List<Token>
+    define cur_line: Int as -1
+    define cur_col: Int as 0
+    for each tok in tokens:
+        if cur_line != -1 and tok.line != cur_line:
+            if length of cur_tokens > 0:
+                append Line(tokens=cur_tokens, line=cur_line, col=cur_col) to result
+                set cur_tokens to empty List<Token>
+            set cur_line to tok.line
+            set cur_col to tok.col
+        else if cur_line == -1:
+            set cur_line to tok.line
+            set cur_col to tok.col
+        append tok to cur_tokens
+    if length of cur_tokens > 0:
+        append Line(tokens=cur_tokens, line=cur_line, col=cur_col) to result
+    return result
+
+function parse_fn_params(tokens: List<Token>, start_pos: Int, end_pos: Int) -> List<Node>:
+    define result: List<Node> as empty List<Node>
+    if start_pos >= end_pos:
+        return result
+    define p_depth: Int as 0
+    define b_depth: Int as 0
+    define cur_start: Int as start_pos
+    for i from start_pos to end_pos - 1:
+        define val: String as tokens[i].value
+        if val == "(":
+            set p_depth to p_depth + 1
+        else if val == ")":
+            set p_depth to p_depth - 1
+        else if val == "[":
+            set b_depth to b_depth + 1
+        else if val == "]":
+            set b_depth to b_depth - 1
+        else if val == "," and p_depth == 0 and b_depth == 0:
+            if i > cur_start:
+                define p_node: Node as parse_single_param(tokens, cur_start, i)
+                append p_node to result
+            set cur_start to i + 1
+    if cur_start < end_pos:
+        define p_node: Node as parse_single_param(tokens, cur_start, end_pos)
+        append p_node to result
+    return result
+
+function parse_single_param(tokens: List<Token>, start_pos: Int, end_pos: Int) -> Node:
+    define tok0: Token as tokens[start_pos]
+    define colon_pos: Int as -1
+    for i from start_pos to end_pos - 1:
+        if tokens[i].value == ":":
+            set colon_pos to i
+            break
+    define empty_nodes: List<Node> as empty List<Node>
+    if colon_pos != -1:
+        define p_name: String as tokens_to_string(tokens, start_pos, colon_pos)
+        define p_type: String as type_tokens_to_string(tokens, colon_pos + 1, end_pos)
+        define type_node: Node as make_leaf("type", p_type, tok0.line)
+        return make_node("param", p_name, tok0.line, optional type_node, empty_nodes)
+    define p_name: String as tokens_to_string(tokens, start_pos, end_pos)
+    return make_leaf("param", p_name, tok0.line)
+
+function parse_record_fields(lines: List<Line>, start_idx: Int, end_idx: Int, min_indent: Int) -> ParseStmtListResult:
+    define fields: List<Node> as empty List<Node>
+    define idx: Int as start_idx
+    while idx < end_idx:
+        define l: Line as lines[idx]
+        if l.col < min_indent:
+            break
+        define l_tokens: List<Token> as l.tokens
+        define num_toks: Int as length of l_tokens
+        if num_toks == 0:
+            set idx to idx + 1
+            continue
+        define f_line: Int as l.line
+        if l_tokens[0].kind == "comment":
+            define c_node: Node as make_leaf("comment", l_tokens[0].value, f_line)
+            append c_node to fields
+            set idx to idx + 1
+            continue
+        define colon_pos: Int as -1
+        for i from 0 to num_toks - 1:
+            if l_tokens[i].value == ":":
+                set colon_pos to i
+                break
+        define empty_nodes: List<Node> as empty List<Node>
+        if colon_pos != -1:
+            define f_name: String as tokens_to_string(l_tokens, 0, colon_pos)
+            define f_type: String as type_tokens_to_string(l_tokens, colon_pos + 1, num_toks)
+            define type_node: Node as make_leaf("type", f_type, f_line)
+            define f_node: Node as make_node("field", f_name, f_line, optional type_node, empty_nodes)
+            append f_node to fields
+        else:
+            define raw: String as tokens_to_string(l_tokens, 0, num_toks)
+            define op_node: Node as make_opaque(raw, f_line)
+            append op_node to fields
+        set idx to idx + 1
+    return ParseStmtListResult(statements=fields, next_pos=idx)
+
+function parse_statements(lines: List<Line>, start_idx: Int, end_idx: Int, min_indent: Int) -> ParseStmtListResult:
+    define statements: List<Node> as empty List<Node>
+    define empty_nodes: List<Node> as empty List<Node>
+    define idx: Int as start_idx
+    while idx < end_idx:
+        define l: Line as lines[idx]
+        define col: Int as l.col
+        if col < min_indent:
+            break
+        define l_tokens: List<Token> as l.tokens
+        define num_toks: Int as length of l_tokens
+        if num_toks == 0:
+            set idx to idx + 1
+            continue
+
+        define tok: Token as l_tokens[0]
+        define stmt_line: Int as l.line
+        define is_handled: Bool as false
+
+        if tok.kind == "comment":
+            define c_node: Node as make_leaf("comment", tok.value, stmt_line)
+            append c_node to statements
+            set idx to idx + 1
+            continue
+
+        # 1. record <Name>:
+        if tok.value == "record":
+            set is_handled to true
+            define rec_name: String as ""
+            if num_toks > 1:
+                set rec_name to l_tokens[1].value
+            define body_res: ParseStmtListResult as parse_record_fields(lines, idx + 1, end_idx, col + 1)
+            define stmt_node: Node as make_block("record", rec_name, stmt_line, body_res.statements)
+            append stmt_node to statements
+            set idx to body_res.next_pos
+
+        # 2. function <name>(<params>) -> <Type>:
+        else if tok.value == "function":
+            set is_handled to true
+            define fn_name: String as ""
+            if num_toks > 1:
+                set fn_name to l_tokens[1].value
+            define open_paren: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "(":
+                    set open_paren to i
+                    break
+            define close_paren: Int as -1
+            if open_paren != -1:
+                set close_paren to find_matching_paren(l_tokens, open_paren, num_toks)
+            define params: List<Node> as empty List<Node>
+            if open_paren != -1 and close_paren != -1:
+                set params to parse_fn_params(l_tokens, open_paren + 1, close_paren)
+            define ret_type: String as "Void"
+            if close_paren != -1 and close_paren + 1 < num_toks:
+                if l_tokens[close_paren + 1].value == "->":
+                    define type_end: Int as num_toks
+                    if l_tokens[num_toks - 1].value == ":":
+                        set type_end to num_toks - 1
+                    set ret_type to type_tokens_to_string(l_tokens, close_paren + 2, type_end)
+            define sig_node: Node as make_block("signature", "-> " + ret_type, stmt_line, params)
+            define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+            define stmt_node: Node as make_node("function", fn_name, stmt_line, optional sig_node, body_res.statements)
+            append stmt_node to statements
+            set idx to body_res.next_pos
+
+        # 3. test <name>:
+        else if tok.value == "test":
+            set is_handled to true
+            define t_name: String as ""
+            if num_toks > 1:
+                set t_name to l_tokens[1].value
+            define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+            define stmt_node: Node as make_block("test", t_name, stmt_line, body_res.statements)
+            append stmt_node to statements
+            set idx to body_res.next_pos
+
+        # 4. define <name> as <expr> / define <name>: <Type> as <expr>
+        else if tok.value == "define":
+            define as_pos: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "as":
+                    set as_pos to i
+                    break
+            if as_pos != -1:
+                set is_handled to true
+                define start_name: Int as 1
+                if l_tokens[start_name].value == "list":
+                    set start_name to start_name + 1
+                define colon_pos: Int as -1
+                for i from start_name to as_pos - 1:
+                    if l_tokens[i].value == ":":
+                        set colon_pos to i
+                        break
+                define name_val: String as ""
+                if colon_pos != -1:
+                    define var_name: String as l_tokens[start_name].value
+                    define var_type: String as type_tokens_to_string(l_tokens, colon_pos + 1, as_pos)
+                    set name_val to var_name + ": " + var_type
+                else:
+                    set name_val to l_tokens[start_name].value
+                define expr_res: ParseExprResult as parse_expr(l_tokens, as_pos + 1, num_toks)
+                define stmt_node: Node as make_node("define", name_val, stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 5. set <target> to <expr>
+        else if tok.value == "set":
+            define to_pos: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "to":
+                    set to_pos to i
+                    break
+            if to_pos != -1:
+                set is_handled to true
+                define target_str: String as tokens_to_string(l_tokens, 1, to_pos)
+                define expr_res: ParseExprResult as parse_expr(l_tokens, to_pos + 1, num_toks)
+                define stmt_node: Node as make_node("assign", target_str, stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 6. print <expr> / print error <expr>
+        else if tok.value == "print":
+            set is_handled to true
+            if num_toks > 1 and l_tokens[1].value == "error":
+                define args: List<Node> as parse_expr_list(l_tokens, 2, num_toks)
+                define stmt_node: Node as make_block("print-err", "", stmt_line, args)
+                append stmt_node to statements
+            else:
+                define args: List<Node> as parse_expr_list(l_tokens, 1, num_toks)
+                define stmt_node: Node as make_block("print", "", stmt_line, args)
+                append stmt_node to statements
+            set idx to idx + 1
+
+        # 7. if <cond>:
+        else if tok.value == "if":
+            set is_handled to true
+            define cond_end: Int as num_toks
+            if l_tokens[num_toks - 1].value == ":":
+                set cond_end to num_toks - 1
+            define cond_res: ParseExprResult as parse_expr(l_tokens, 1, cond_end)
+            define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+            define branches: List<Node> as empty List<Node>
+            define if_branch: Node as make_node("branch", "if", stmt_line, optional cond_res.node, body_res.statements)
+            append if_branch to branches
+            set idx to body_res.next_pos
+
+            # check for else if / else
+            while idx < end_idx:
+                define next_l: Line as lines[idx]
+                if next_l.col < col:
+                    break
+                if length of next_l.tokens == 0:
+                    set idx to idx + 1
+                    continue
+                if next_l.tokens[0].kind == "comment":
+                    define c_node: Node as make_leaf("comment", next_l.tokens[0].value, next_l.line)
+                    append c_node to branches
+                    set idx to idx + 1
+                    continue
+                if next_l.col == col and next_l.tokens[0].value == "else":
+                    define e_toks: List<Token> as next_l.tokens
+                    define e_num: Int as length of e_toks
+                    define b_line: Int as next_l.line
+                    if e_num > 1 and e_toks[1].value == "if":
+                        define eif_cond_end: Int as e_num
+                        if e_toks[e_num - 1].value == ":":
+                            set eif_cond_end to e_num - 1
+                        define eif_cond: ParseExprResult as parse_expr(e_toks, 2, eif_cond_end)
+                        define eif_body: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+                        define eif_branch: Node as make_node("branch", "else if", b_line, optional eif_cond.node, eif_body.statements)
+                        append eif_branch to branches
+                        set idx to eif_body.next_pos
+                    else:
+                        define else_body: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+                        define else_branch: Node as make_block("branch", "else", b_line, else_body.statements)
+                        append else_branch to branches
+                        set idx to else_body.next_pos
+                        break
+                else:
+                    break
+            define stmt_node: Node as make_block("if", "", stmt_line, branches)
+            append stmt_node to statements
+
+        # 8. for each <name> in <expr>:
+        else if tok.value == "for" and num_toks > 1 and l_tokens[1].value == "each":
+            define in_pos: Int as -1
+            for i from 2 to num_toks - 1:
+                if l_tokens[i].value == "in":
+                    set in_pos to i
+                    break
+            if in_pos != -1:
+                set is_handled to true
+                define name_str: String as tokens_to_string(l_tokens, 2, in_pos)
+                define expr_end: Int as num_toks
+                if l_tokens[num_toks - 1].value == ":":
+                    set expr_end to num_toks - 1
+                define coll_res: ParseExprResult as parse_expr(l_tokens, in_pos + 1, expr_end)
+                define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+                define stmt_node: Node as make_node("for-each", name_str, stmt_line, optional coll_res.node, body_res.statements)
+                append stmt_node to statements
+                set idx to body_res.next_pos
+
+        # 9. for <name> from <expr> to <expr>:
+        else if tok.value == "for" and num_toks > 1 and l_tokens[1].value != "each":
+            define from_pos: Int as -1
+            define to_pos: Int as -1
+            for i from 2 to num_toks - 1:
+                if l_tokens[i].value == "from":
+                    set from_pos to i
+                else if l_tokens[i].value == "to":
+                    set to_pos to i
+            if from_pos != -1 and to_pos != -1 and from_pos < to_pos:
+                set is_handled to true
+                define name_str: String as l_tokens[1].value
+                define start_res: ParseExprResult as parse_expr(l_tokens, from_pos + 1, to_pos)
+                define end_bound: Int as num_toks
+                if l_tokens[num_toks - 1].value == ":":
+                    set end_bound to num_toks - 1
+                define end_res: ParseExprResult as parse_expr(l_tokens, to_pos + 1, end_bound)
+                define range_ch: List<Node> as empty List<Node>
+                append start_res.node to range_ch
+                append end_res.node to range_ch
+                define range_node: Node as make_block("range", "", stmt_line, range_ch)
+                define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+                define stmt_node: Node as make_node("for-range", name_str, stmt_line, optional range_node, body_res.statements)
+                append stmt_node to statements
+                set idx to body_res.next_pos
+
+        # 10. while <cond>:
+        else if tok.value == "while":
+            set is_handled to true
+            define cond_end: Int as num_toks
+            if l_tokens[num_toks - 1].value == ":":
+                set cond_end to num_toks - 1
+            define cond_res: ParseExprResult as parse_expr(l_tokens, 1, cond_end)
+            define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+            define stmt_node: Node as make_node("while", "", stmt_line, optional cond_res.node, body_res.statements)
+            append stmt_node to statements
+            set idx to body_res.next_pos
+
+        # 11. return <expr> / return
+        else if tok.value == "return":
+            set is_handled to true
+            if num_toks > 1:
+                define expr_res: ParseExprResult as parse_expr(l_tokens, 1, num_toks)
+                define stmt_node: Node as make_node("return", "", stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+            else:
+                define stmt_node: Node as make_node("return", "", stmt_line, nothing, empty_nodes)
+                append stmt_node to statements
+            set idx to idx + 1
+
+        # 12. exit with code <expr>
+        else if tok.value == "exit":
+            if num_toks > 3 and l_tokens[1].value == "with" and l_tokens[2].value == "code":
+                set is_handled to true
+                define expr_res: ParseExprResult as parse_expr(l_tokens, 3, num_toks)
+                define stmt_node: Node as make_node("exit", "", stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 13. use <module>
+        else if tok.value == "use":
+            set is_handled to true
+            define mod_str: String as tokens_to_string(l_tokens, 1, num_toks)
+            define stmt_node: Node as make_node("use", mod_str, stmt_line, nothing, empty_nodes)
+            append stmt_node to statements
+            set idx to idx + 1
+
+        # 14. call <name>(<args>)
+        else if tok.value == "call":
+            define fn_name: String as l_tokens[1].value
+            define open_paren: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "(":
+                    set open_paren to i
+                    break
+            define close_paren: Int as -1
+            if open_paren != -1:
+                set close_paren to find_matching_paren(l_tokens, open_paren, num_toks)
+            if open_paren != -1 and close_paren != -1:
+                set is_handled to true
+                define args: List<Node> as parse_expr_list(l_tokens, open_paren + 1, close_paren)
+                define stmt_node: Node as make_block("call", fn_name, stmt_line, args)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 15. add <expr> to <target> / append <expr> to <target>
+        else if tok.value == "add" or tok.value == "append":
+            define to_pos: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "to":
+                    set to_pos to i
+                    break
+            if to_pos != -1:
+                set is_handled to true
+                define expr_res: ParseExprResult as parse_expr(l_tokens, 1, to_pos)
+                define target_str: String as tokens_to_string(l_tokens, to_pos + 1, num_toks)
+                define stmt_node: Node as make_node("add", target_str, stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 16. remove <expr> from <target>
+        else if tok.value == "remove":
+            define from_pos: Int as -1
+            for i from 1 to num_toks - 1:
+                if l_tokens[i].value == "from":
+                    set from_pos to i
+                    break
+            if from_pos != -1:
+                set is_handled to true
+                define expr_res: ParseExprResult as parse_expr(l_tokens, 1, from_pos)
+                define target_str: String as tokens_to_string(l_tokens, from_pos + 1, num_toks)
+                define stmt_node: Node as make_node("remove", target_str, stmt_line, optional expr_res.node, empty_nodes)
+                append stmt_node to statements
+                set idx to idx + 1
+
+        # 17. assert <expr>
+        else if tok.value == "assert":
+            set is_handled to true
+            define expr_res: ParseExprResult as parse_expr(l_tokens, 1, num_toks)
+            define stmt_node: Node as make_node("assert", "", stmt_line, optional expr_res.node, empty_nodes)
+            append stmt_node to statements
+            set idx to idx + 1
+
+        # 18. break / continue
+        else if tok.value == "break":
+            set is_handled to true
+            define stmt_node: Node as make_node("break", "", stmt_line, nothing, empty_nodes)
+            append stmt_node to statements
+            set idx to idx + 1
+
+        else if tok.value == "continue":
+            set is_handled to true
+            define stmt_node: Node as make_node("continue", "", stmt_line, nothing, empty_nodes)
+            append stmt_node to statements
+            set idx to idx + 1
+
+        # 19. write <expr> as json to file <path> / write file <path> with <expr>
+        else if tok.value == "write":
+            if num_toks > 2 and l_tokens[1].value == "file":
+                define with_pos: Int as -1
+                for i from 2 to num_toks - 1:
+                    if l_tokens[i].value == "with":
+                        set with_pos to i
+                        break
+                if with_pos != -1:
+                    set is_handled to true
+                    define p_res: ParseExprResult as parse_expr(l_tokens, 2, with_pos)
+                    define expr_res: ParseExprResult as parse_expr(l_tokens, with_pos + 1, num_toks)
+                    define ch_list: List<Node> as empty List<Node>
+                    append p_res.node to ch_list
+                    define stmt_node: Node as make_node("write", "file", stmt_line, optional expr_res.node, ch_list)
+                    append stmt_node to statements
+                    set idx to idx + 1
+            else:
+                define as_pos: Int as -1
+                define file_pos: Int as -1
+                for i from 1 to num_toks - 1:
+                    if l_tokens[i].value == "as":
+                        set as_pos to i
+                    else if l_tokens[i].value == "file":
+                        set file_pos to i
+                if as_pos != -1 and file_pos != -1 and as_pos < file_pos:
+                    set is_handled to true
+                    define expr_res: ParseExprResult as parse_expr(l_tokens, 1, as_pos)
+                    define p_res: ParseExprResult as parse_expr(l_tokens, file_pos + 1, num_toks)
+                    define ch_list: List<Node> as empty List<Node>
+                    append p_res.node to ch_list
+                    define stmt_node: Node as make_node("write", "json", stmt_line, optional expr_res.node, ch_list)
+                    append stmt_node to statements
+                    set idx to idx + 1
+
+        # Opaque fallback
+        if not is_handled:
+            define raw: String as tokens_to_string(l_tokens, 0, num_toks)
+            if idx + 1 < end_idx and lines[idx + 1].col > col:
+                define body_res: ParseStmtListResult as parse_statements(lines, idx + 1, end_idx, col + 1)
+                define stmt_node: Node as make_block("opaque", raw, stmt_line, body_res.statements)
+                append stmt_node to statements
+                set idx to body_res.next_pos
+            else:
+                define stmt_node: Node as make_opaque(raw, stmt_line)
+                append stmt_node to statements
+                set idx to idx + 1
+
+    return ParseStmtListResult(statements=statements, next_pos=idx)
+
+function parse_source(source: String) -> Optional<Node>:
+    define tokens: List<Token> as tokenize(source)
+    if token_has_error(tokens):
+        return nothing
+    define lines: List<Line> as filter_comments(tokens)
+    define n: Int as length of lines
+    define empty_nodes: List<Node> as empty List<Node>
+    if n == 0:
+        return optional Node(kind="program", value="", line=1, child=nothing, children=empty_nodes)
+    define res: ParseStmtListResult as parse_statements(lines, 0, n, 0)
+    return optional Node(kind="program", value="", line=1, child=nothing, children=res.statements)
+
+function parse_file(path: String) -> Optional<Node>:
+    define content_opt: Optional<String> as read string from file path or else nothing
+    if content_opt is nothing:
+        return nothing
+    define content: String as value of content_opt
+    return parse_source(content)

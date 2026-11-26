@@ -1,0 +1,149 @@
+# lexer.meme - Token model and lexical analyzer for Memelang
+use keywords
+
+record Token:
+    kind: String
+    value: String
+    line: Int
+    col: Int
+
+function is_single_op(c: String) -> Bool:
+    if c == "+" or c == "-" or c == "*" or c == "/" or c == "%":
+        return true
+    if c == "<" or c == ">" or c == "=":
+        return true
+    if c == "(" or c == ")" or c == "[" or c == "]":
+        return true
+    if c == "{" or c == "}" or c == "," or c == ":" or c == ";" or c == ".":
+        return true
+    return false
+
+function tokenize(source: String) -> List<Token>:
+    define tokens as empty List<Token>
+    define n as length of string source
+    define i as 0
+    define line as 1
+    define col as 0
+    while i < n:
+        define ch as char at i of source
+        if ch == "\n":
+            set line to line + 1
+            set col to 0
+            set i to i + 1
+        else if ch == "\r":
+            set i to i + 1
+        else if ch == " " or ch == "\t":
+            set col to col + 1
+            set i to i + 1
+        else if ch == "#":
+            define tok_col as col
+            define start_i as i
+            while i < n:
+                define c as char at i of source
+                if c == "\n" or c == "\r":
+                    break
+                set col to col + 1
+                set i to i + 1
+            define val as slice source from start_i to i
+            append Token(kind="comment", value=val, line=line, col=tok_col) to tokens
+        else if ch == "\"":
+            define tok_col as col
+            define start_i as i
+            set col to col + 1
+            set i to i + 1
+            define closed as false
+            while i < n:
+                define c as char at i of source
+                if c == "\\":
+                    if i + 1 >= n:
+                        break
+                    set col to col + 2
+                    set i to i + 2
+                else if c == "\n":
+                    break
+                else if c == "\"":
+                    set col to col + 1
+                    set i to i + 1
+                    set closed to true
+                    break
+                else:
+                    set col to col + 1
+                    set i to i + 1
+            if not closed:
+                append Token(kind="error", value="Error: unterminated string literal at line " + text of line + ", col " + text of tok_col, line=line, col=tok_col) to tokens
+                return tokens
+            define val as slice source from start_i to i
+            append Token(kind="string", value=val, line=line, col=tok_col) to tokens
+        else if is digit ch:
+            define tok_col as col
+            define start_i as i
+            while i < n and is digit (char at i of source):
+                set col to col + 1
+                set i to i + 1
+            define is_float as false
+            if i < n:
+                if char at i of source == ".":
+                    if i + 1 < n:
+                        if is digit (char at (i + 1) of source):
+                            set is_float to true
+                            set col to col + 1
+                            set i to i + 1
+                            while i < n and is digit (char at i of source):
+                                set col to col + 1
+                                set i to i + 1
+            define val as slice source from start_i to i
+            if is_float:
+                append Token(kind="float", value=val, line=line, col=tok_col) to tokens
+            else:
+                append Token(kind="int", value=val, line=line, col=tok_col) to tokens
+        else if is letter ch or ch == "_":
+            define tok_col as col
+            define start_i as i
+            while i < n:
+                define c as char at i of source
+                if is letter c or is digit c or c == "_":
+                    set col to col + 1
+                    set i to i + 1
+                else:
+                    break
+            define val as slice source from start_i to i
+            define kind as classify(val)
+            append Token(kind=kind, value=val, line=line, col=tok_col) to tokens
+        else:
+            define is_two as false
+            if i + 1 < n:
+                define two as slice source from i to i + 2
+                if two == "==" or two == "!=" or two == ">=" or two == "<=" or two == "->":
+                    append Token(kind="operator", value=two, line=line, col=col) to tokens
+                    set col to col + 2
+                    set i to i + 2
+                    set is_two to true
+            if not is_two:
+                if is_single_op(ch):
+                    append Token(kind="operator", value=ch, line=line, col=col) to tokens
+                    set col to col + 1
+                    set i to i + 1
+                else:
+                    append Token(kind="error", value="Error: unexpected character '" + ch + "' at line " + text of line + ", col " + text of col, line=line, col=col) to tokens
+                    return tokens
+    return tokens
+
+function tokenize_file(path: String) -> Optional<List<Token>>:
+    define content_opt: Optional<String> as read string from file path or else nothing
+    if content_opt is nothing:
+        return nothing
+    define content: String as value of content_opt
+    define tokens: List<Token> as tokenize(content)
+    return optional tokens
+
+function token_has_error(tokens: List<Token>) -> Bool:
+    for each tok in tokens:
+        if tok.kind == "error":
+            return true
+    return false
+
+function token_error_message(tokens: List<Token>) -> String:
+    for each tok in tokens:
+        if tok.kind == "error":
+            return tok.value
+    return ""

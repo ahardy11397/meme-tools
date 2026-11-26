@@ -1,0 +1,128 @@
+# hasher.meme - Source normalization and exact SHA-256 computation
+
+function rstrip_newlines(s: String) -> String:
+    define n: Int as length of string s
+    define end_idx: Int as n
+    while end_idx > 0 and char at (end_idx - 1) of s == "\n":
+        set end_idx to end_idx - 1
+    if end_idx == n:
+        return s
+    return slice s from 0 to end_idx
+
+function is_ident_start(c: String) -> Bool:
+    if c >= "a" and c <= "z":
+        return true
+    if c == "_":
+        return true
+    return false
+
+function is_ident_part(c: String) -> Bool:
+    if c >= "a" and c <= "z":
+        return true
+    if c >= "0" and c <= "9":
+        return true
+    if c == "_":
+        return true
+    return false
+
+function parse_test_header(line: String) -> Optional<String>:
+    define n: Int as length of string line
+    if n < 6:
+        return nothing
+    if not (line starts with "test"):
+        return nothing
+    define c4: String as char at 4 of line
+    if c4 != " " and c4 != "\t":
+        return nothing
+    define idx: Int as 5
+    while idx < n:
+        define ch: String as char at idx of line
+        if ch == " " or ch == "\t":
+            set idx to idx + 1
+        else:
+            break
+    if idx >= n:
+        return nothing
+    define first_c: String as char at idx of line
+    if not is_ident_start(first_c):
+        return nothing
+    define start_id: Int as idx
+    while idx < n:
+        define ch2: String as char at idx of line
+        if is_ident_part(ch2):
+            set idx to idx + 1
+        else:
+            break
+    define name: String as slice line from start_id to idx
+    while idx < n:
+        define ch3: String as char at idx of line
+        if ch3 == " " or ch3 == "\t":
+            set idx to idx + 1
+        else:
+            break
+    if idx >= n or char at idx of line != ":":
+        return nothing
+    return optional name
+
+function compute_source_hash(source_text: String) -> String:
+    define crlf_fixed: String as replace "\r\n" with "\n" in source_text
+    define lf_only: String as replace "\r" with "\n" in crlf_fixed
+    define normalized: String as rstrip_newlines(lf_only)
+
+    define lines: List<String> as split normalized by "\n"
+    define top_content: String as ""
+    define has_top: Bool as false
+
+    define test_names: List<String> as empty List<String>
+    define test_contents: Map<String, String> as empty Map<String, String>
+    define curr_test: String as ""
+    define in_test: Bool as false
+    define has_tests: Bool as false
+
+    for each raw_line in lines:
+        define m: Optional<String> as parse_test_header(raw_line)
+        if m is not nothing:
+            set has_tests to true
+            set in_test to true
+            set curr_test to value of m
+            set test_contents[curr_test] to raw_line
+            define already_seen: Bool as false
+            for each existing_name in test_names:
+                if existing_name == curr_test:
+                    set already_seen to true
+            if not already_seen:
+                append curr_test to test_names
+            continue
+
+        if in_test:
+            if (raw_line starts with " ") or (raw_line starts with "\t") or (length of string trim raw_line == 0):
+                set test_contents[curr_test] to test_contents[curr_test] + "\n" + raw_line
+                continue
+            else:
+                set in_test to false
+                set curr_test to ""
+
+        if not has_top:
+            set top_content to raw_line
+            set has_top to true
+        else:
+            set top_content to top_content + "\n" + raw_line
+
+    if has_tests:
+        define parts: List<String> as empty List<String>
+        define top_part: String as ""
+        if has_top:
+            set top_part to rstrip_newlines(top_content)
+        if length of string top_part > 0:
+            append top_part to parts
+
+        sort test_names ascending
+        for each name in test_names:
+            define b_content: String as rstrip_newlines(test_contents[name])
+            if length of string b_content > 0:
+                append b_content to parts
+
+        define reconstructed: String as join parts with "\n\n"
+        set normalized to rstrip_newlines(reconstructed)
+
+    return sha256 of normalized

@@ -1,0 +1,105 @@
+# ast.meme - AST node model, tree emission, and node helpers
+
+record Node:
+    kind: String
+    value: String
+    line: Int
+    child: Optional<Node>
+    children: List<Node>
+
+function make_leaf(kind: String, value: String, line: Int) -> Node:
+    define empty_children: List<Node> as empty List<Node>
+    return Node(kind=kind, value=value, line=line, child=nothing, children=empty_children)
+
+function make_node(kind: String, value: String, line: Int, child: Optional<Node>, children: List<Node>) -> Node:
+    return Node(kind=kind, value=value, line=line, child=child, children=children)
+
+function make_wrapper(kind: String, value: String, line: Int, child: Node) -> Node:
+    define empty_children: List<Node> as empty List<Node>
+    return Node(kind=kind, value=value, line=line, child=optional child, children=empty_children)
+
+function make_block(kind: String, value: String, line: Int, children: List<Node>) -> Node:
+    return Node(kind=kind, value=value, line=line, child=nothing, children=children)
+
+function make_opaque(value: String, line: Int) -> Node:
+    define empty_children: List<Node> as empty List<Node>
+    return Node(kind="opaque", value=value, line=line, child=nothing, children=empty_children)
+
+function indent_spaces(level: Int) -> String:
+    define res: String as ""
+    for i from 1 to level:
+        set res to res + "  "
+    return res
+
+function node_to_string(node: Node, level: Int) -> String:
+    define ind: String as indent_spaces(level)
+    define out: String as ind + node.kind
+    if length of string node.value > 0:
+        set out to out + " " + node.value
+    set out to out + "\n"
+    if node.child is not nothing:
+        define ch: Node as value of node.child
+        set out to out + node_to_string(ch, level + 1)
+    for each c in node.children:
+        set out to out + node_to_string(c, level + 1)
+    return out
+
+function emit_tree_text(node: Node) -> Void:
+    define text: String as node_to_string(node, 0)
+    print text
+
+function count_opaque_nodes(node: Node) -> Int:
+    define count: Int as 0
+    if node.kind == "opaque":
+        set count to count + 1
+    if node.child is not nothing:
+        define ch: Node as value of node.child
+        set count to count + count_opaque_nodes(ch)
+    for each c in node.children:
+        set count to count + count_opaque_nodes(c)
+    return count
+
+function trees_equal(a: Node, b: Node) -> Bool:
+    if a.kind != b.kind:
+        return false
+    if a.value != b.value:
+        return false
+    if a.child is nothing and b.child is not nothing:
+        return false
+    if a.child is not nothing and b.child is nothing:
+        return false
+    if a.child is not nothing and b.child is not nothing:
+        define ch_a: Node as value of a.child
+        define ch_b: Node as value of b.child
+        if not trees_equal(ch_a, ch_b):
+            return false
+    if length of a.children != length of b.children:
+        return false
+    define n: Int as length of a.children
+    for i from 0 to n - 1:
+        if not trees_equal(a.children[i], b.children[i]):
+            return false
+    return true
+
+function tree_diff(a: Node, b: Node, path: String) -> String:
+    if a.kind != b.kind:
+        return "kind mismatch at " + path + ": " + a.kind + " vs " + b.kind
+    if a.value != b.value:
+        return "value mismatch at " + path + " (" + a.kind + "): \"" + a.value + "\" vs \"" + b.value + "\""
+    if a.child is nothing and b.child is not nothing:
+        return "child mismatch at " + path + ": nothing vs child"
+    if a.child is not nothing and b.child is nothing:
+        return "child mismatch at " + path + ": child vs nothing"
+    if a.child is not nothing and b.child is not nothing:
+        define d: String as tree_diff(value of a.child, value of b.child, path + ".child")
+        if length of string d > 0:
+            return d
+    if length of a.children != length of b.children:
+        return "children count mismatch at " + path + ": " + text of (length of a.children) + " vs " + text of (length of b.children)
+    define n: Int as length of a.children
+    for i from 0 to n - 1:
+        define cd: String as tree_diff(a.children[i], b.children[i], path + "[" + text of i + "]")
+        if length of string cd > 0:
+            return cd
+    return ""
+

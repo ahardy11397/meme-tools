@@ -1,0 +1,48 @@
+# keywords.meme - Memelang core keywords set and classifier
+
+function get_keywords() -> Set<String>:
+    define kw: Set<String> as empty set of String
+    add "function" to set kw
+    add "return" to set kw
+    add "if" to set kw
+    add "else" to set kw
+    add "for" to set kw
+    add "each" to set kw
+    add "in" to set kw
+    add "define" to set kw
+    add "set" to set kw
+    add "to" to set kw
+    add "print" to set kw
+    add "error" to set kw
+    add "print error" to set kw
+    add "record" to set kw
+    add "test" to set kw
+    add "assert" to set kw
+    add "use" to set kw
+    add "nothing" to set kw
+    add "is" to set kw
+    add "not" to set kw
+    add "and" to set kw
+    add "or" to set kw
+    add "call" to set kw
+    add "exit" to set kw
+    add "with" to set kw
+    add "from" to set kw
+    add "of" to set kw
+    add "the" to set kw
+    add "value" to set kw
+    add "empty" to set kw
+    add "add" to set kw
+    add "remove" to set kw
+    add "sort" to set kw
+    add "read" to set kw
+    add "write" to set kw
+    add "length" to set kw
+    add "while" to set kw
+    return kw
+
+function classify(word: String) -> String:
+    define kw as get_keywords()
+    if kw contains word:
+        return "keyword"
+    return "identifier"

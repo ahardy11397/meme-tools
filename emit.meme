@@ -1,0 +1,502 @@
+# emit.meme - Canonical tree-to-text emitter for Memelang AST
+use ast
+
+function indent_4(level: Int) -> String:
+    define res: String as ""
+    for i from 1 to level:
+        set res to res + "    "
+    return res
+
+function starts_with(s: String, prefix: String) -> Bool:
+    define p_len: Int as length of string prefix
+    if length of string s < p_len:
+        return false
+    define sub: String as slice s from 0 to p_len
+    return sub == prefix
+
+function get_expr_prec(node: Node) -> Int:
+    if node.kind == "binary_op":
+        if node.value == "or":
+            return 1
+        if node.value == "and":
+            return 2
+        if node.value == "==" or node.value == "!=" or node.value == "<" or node.value == ">" or node.value == "<=" or node.value == ">=" or node.value == "contains" or node.value == "or else":
+            return 3
+        if node.value == "+" or node.value == "-":
+            return 4
+        if node.value == "*" or node.value == "/" or node.value == "%":
+            return 5
+        return 3
+    if node.kind == "comparison":
+        return 3
+    if node.kind == "unary_op" or node.kind == "optional" or node.kind == "value_of" or node.kind == "text_of" or node.kind == "is_digit" or node.kind == "is_letter" or node.kind == "is_upper" or node.kind == "is_lower":
+        return 6
+    if node.kind == "builtin":
+        if node.value == "argument_count" or starts_with(node.value, "read "):
+            return 7
+        return 6
+    return 7
+
+function emit_expr(node: Node) -> String:
+    if node.kind == "int" or node.kind == "float" or node.kind == "string" or node.kind == "identifier":
+        return node.value
+
+    if node.kind == "nothing":
+        return "nothing"
+
+    if node.kind == "empty_collection":
+        if length of string node.value > 0:
+            return "empty " + node.value
+        return "empty"
+
+    if node.kind == "list":
+        define elem_strs: List<String> as empty List<String>
+        for each elem in node.children:
+            append emit_expr(elem) to elem_strs
+        return "[" + join elem_strs with ", " + "]"
+
+    if node.kind == "index":
+        define base: Node as value of node.child
+        define b_str: String as emit_expr(base)
+        if get_expr_prec(base) < 7:
+            set b_str to "(" + b_str + ")"
+        define idx_str: String as emit_expr(node.children[0])
+        return b_str + "[" + idx_str + "]"
+
+    if node.kind == "field_access":
+        define base: Node as value of node.child
+        define b_str: String as emit_expr(base)
+        if get_expr_prec(base) < 7:
+            set b_str to "(" + b_str + ")"
+        return b_str + "." + node.value
+
+    if node.kind == "call":
+        define arg_strs: List<String> as empty List<String>
+        for each arg in node.children:
+            append emit_expr(arg) to arg_strs
+        return node.value + "(" + join arg_strs with ", " + ")"
+
+    if node.kind == "record_init":
+        define init_strs: List<String> as empty List<String>
+        for each item in node.children:
+            if item.kind == "field_init":
+                define val_str: String as ""
+                if item.child is not nothing:
+                    set val_str to emit_expr(value of item.child)
+                define pair_str: String as item.value + "=" + val_str
+                append pair_str to init_strs
+            else:
+                append emit_expr(item) to init_strs
+        return node.value + "(" + join init_strs with ", " + ")"
+
+    if node.kind == "unary_op":
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if node.value == "-":
+            if get_expr_prec(ch) < 6:
+                return "-(" + ch_str + ")"
+            return "-" + ch_str
+        if node.value == "not":
+            if get_expr_prec(ch) < 6:
+                return "not (" + ch_str + ")"
+            return "not " + ch_str
+        return node.value + " " + ch_str
+
+    if node.kind == "optional":
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if get_expr_prec(ch) < 6:
+            return "optional (" + ch_str + ")"
+        return "optional " + ch_str
+
+    if node.kind == "value_of":
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if get_expr_prec(ch) < 6:
+            return "value of (" + ch_str + ")"
+        return "value of " + ch_str
+
+    if node.kind == "text_of":
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if get_expr_prec(ch) < 6:
+            return "text of (" + ch_str + ")"
+        return "text of " + ch_str
+
+    if node.kind == "is_digit" or node.kind == "is_letter" or node.kind == "is_upper" or node.kind == "is_lower":
+        define sub: String as slice node.kind from 3 to length of string node.kind
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if get_expr_prec(ch) < 6:
+            return "is " + sub + " (" + ch_str + ")"
+        return "is " + sub + " " + ch_str
+
+    if node.kind == "comparison":
+        define ch: Node as value of node.child
+        define ch_str: String as emit_expr(ch)
+        if get_expr_prec(ch) < 3:
+            set ch_str to "(" + ch_str + ")"
+        return ch_str + " " + node.value
+
+    if node.kind == "binary_op":
+        define p: Int as get_expr_prec(node)
+        define lhs: Node as node.children[0]
+        define rhs: Node as node.children[1]
+        define l_prec: Int as get_expr_prec(lhs)
+        define r_prec: Int as get_expr_prec(rhs)
+        define l_str: String as emit_expr(lhs)
+        define r_str: String as emit_expr(rhs)
+        if l_prec < p:
+            set l_str to "(" + l_str + ")"
+        if r_prec <= p:
+            set r_str to "(" + r_str + ")"
+        return l_str + " " + node.value + " " + r_str
+
+    if node.kind == "builtin":
+        if node.value == "argument_count":
+            return "argument count"
+        if starts_with(node.value, "read "):
+            return node.value
+        if node.value == "length":
+            define ch: Node as value of node.child
+            define ch_str: String as emit_expr(ch)
+            if get_expr_prec(ch) < 6:
+                return "length of (" + ch_str + ")"
+            return "length of " + ch_str
+        if node.value == "argument":
+            define ch: Node as value of node.child
+            define ch_str: String as emit_expr(ch)
+            if get_expr_prec(ch) < 6:
+                return "argument (" + ch_str + ")"
+            return "argument " + ch_str
+        if node.value == "sha256":
+            define ch: Node as value of node.child
+            define ch_str: String as emit_expr(ch)
+            if get_expr_prec(ch) < 6:
+                return "sha256 of (" + ch_str + ")"
+            return "sha256 of " + ch_str
+        if node.value == "read_file":
+            define ch: Node as value of node.child
+            define ch_str: String as emit_expr(ch)
+            if get_expr_prec(ch) < 6:
+                return "read string from file (" + ch_str + ")"
+            return "read string from file " + ch_str
+        if node.value == "file_exists":
+            define ch: Node as value of node.child
+            define ch_str: String as emit_expr(ch)
+            if get_expr_prec(ch) < 6:
+                return "file exists (" + ch_str + ")"
+            return "file exists " + ch_str
+        if node.value == "char_at":
+            define i_str: String as emit_expr(node.children[0])
+            define s_node: Node as node.children[1]
+            define s_str: String as emit_expr(s_node)
+            if get_expr_prec(s_node) < 7:
+                set s_str to "(" + s_str + ")"
+            return "char at " + i_str + " of " + s_str
+        if node.value == "slice":
+            define s_str: String as emit_expr(node.children[0])
+            define a_str: String as emit_expr(node.children[1])
+            define b_node: Node as node.children[2]
+            define b_str: String as emit_expr(b_node)
+            if get_expr_prec(b_node) < 7:
+                set b_str to "(" + b_str + ")"
+            return "slice " + s_str + " from " + a_str + " to " + b_str
+        if node.value == "index_of":
+            define x_str: String as emit_expr(node.children[0])
+            define s_node: Node as node.children[1]
+            define s_str: String as emit_expr(s_node)
+            if get_expr_prec(s_node) < 7:
+                set s_str to "(" + s_str + ")"
+            return "index of " + x_str + " in " + s_str
+        if starts_with(node.value, "read_json_record: "):
+            define rec_name: String as slice node.value from 18 to length of string node.value
+            define p_str: String as emit_expr(node.children[0])
+            define d_node: Node as node.children[1]
+            define d_str: String as emit_expr(d_node)
+            if get_expr_prec(d_node) < 7:
+                set d_str to "(" + d_str + ")"
+            return "read json record " + rec_name + " from file " + p_str + " or else " + d_str
+        if starts_with(node.value, "read_json_records: "):
+            define rec_name: String as slice node.value from 19 to length of string node.value
+            define p_str: String as emit_expr(node.children[0])
+            define d_node: Node as node.children[1]
+            define d_str: String as emit_expr(d_node)
+            if get_expr_prec(d_node) < 7:
+                set d_str to "(" + d_str + ")"
+            return "read json records " + rec_name + " from file " + p_str + " or else " + d_str
+        if starts_with(node.value, "read_json_file: "):
+            define t_str: String as slice node.value from 16 to length of string node.value
+            define p_str: String as emit_expr(node.children[0])
+            define d_node: Node as node.children[1]
+            define d_str: String as emit_expr(d_node)
+            if get_expr_prec(d_node) < 7:
+                set d_str to "(" + d_str + ")"
+            return "read json file " + p_str + " as " + t_str + " or else " + d_str
+
+    return node.value
+
+function emit_block(nodes: List<Node>, level: Int) -> List<String>:
+    define lines: List<String> as empty List<String>
+    for each node in nodes:
+        define stmt_lines: List<String> as emit_stmt(node, level)
+        for each sl in stmt_lines:
+            append sl to lines
+    return lines
+
+function emit_stmt(node: Node, level: Int) -> List<String>:
+    define lines: List<String> as empty List<String>
+    define ind: String as indent_4(level)
+
+    if node.kind == "record":
+        define r_hdr: String as ind + "record " + node.value + ":"
+        append r_hdr to lines
+        for each f in node.children:
+            if f.kind == "field":
+                define t_val: String as ""
+                if f.child is not nothing:
+                    set t_val to (value of f.child).value
+                define f_line: String as indent_4(level + 1) + f.value + ": " + t_val
+                append f_line to lines
+            else if f.kind == "comment" or f.kind == "opaque":
+                define f_line: String as indent_4(level + 1) + f.value
+                append f_line to lines
+
+    else if node.kind == "function":
+        define p_strs: List<String> as empty List<String>
+        define ret_type: String as "-> Void"
+        if node.child is not nothing:
+            define sig: Node as value of node.child
+            for each p in sig.children:
+                if p.child is not nothing:
+                    define p_item: String as p.value + ": " + (value of p.child).value
+                    append p_item to p_strs
+                else:
+                    append p.value to p_strs
+            if length of string sig.value > 0:
+                set ret_type to sig.value
+        define params_text: String as join p_strs with ", "
+        define fn_hdr: String as ind + "function " + node.value + "(" + params_text + ") " + ret_type + ":"
+        append fn_hdr to lines
+        define b_lines: List<String> as emit_block(node.children, level + 1)
+        for each bl in b_lines:
+            append bl to lines
+
+    else if node.kind == "test":
+        define t_hdr: String as ind + "test " + node.value + ":"
+        append t_hdr to lines
+        define b_lines: List<String> as emit_block(node.children, level + 1)
+        for each bl in b_lines:
+            append bl to lines
+
+    else if node.kind == "define":
+        define expr_str: String as ""
+        if node.child is not nothing:
+            set expr_str to emit_expr(value of node.child)
+        define def_line: String as ind + "define " + node.value + " as " + expr_str
+        append def_line to lines
+
+    else if node.kind == "assign":
+        define expr_str: String as ""
+        if node.child is not nothing:
+            set expr_str to emit_expr(value of node.child)
+        define set_line: String as ind + "set " + node.value + " to " + expr_str
+        append set_line to lines
+
+    else if node.kind == "print":
+        define a_strs: List<String> as empty List<String>
+        for each arg in node.children:
+            append emit_expr(arg) to a_strs
+        define a_text: String as join a_strs with ", "
+        if length of string a_text > 0:
+            define pr_line: String as ind + "print " + a_text
+            append pr_line to lines
+        else:
+            define pr_line: String as ind + "print"
+            append pr_line to lines
+
+    else if node.kind == "print-err":
+        define a_strs: List<String> as empty List<String>
+        for each arg in node.children:
+            append emit_expr(arg) to a_strs
+        define a_text: String as join a_strs with ", "
+        define pr_line: String as ind + "print error " + a_text
+        append pr_line to lines
+
+    else if node.kind == "if":
+        for each br in node.children:
+            if br.kind == "comment":
+                define c_line: String as ind + br.value
+                append c_line to lines
+            else if br.kind == "branch":
+                if br.value == "if":
+                    define cond_str: String as ""
+                    if br.child is not nothing:
+                        set cond_str to emit_expr(value of br.child)
+                    define if_hdr: String as ind + "if " + cond_str + ":"
+                    append if_hdr to lines
+                    define b_lines: List<String> as emit_block(br.children, level + 1)
+                    for each bl in b_lines:
+                        append bl to lines
+                else if br.value == "else if":
+                    define cond_str: String as ""
+                    if br.child is not nothing:
+                        set cond_str to emit_expr(value of br.child)
+                    define eif_hdr: String as ind + "else if " + cond_str + ":"
+                    append eif_hdr to lines
+                    define b_lines: List<String> as emit_block(br.children, level + 1)
+                    for each bl in b_lines:
+                        append bl to lines
+                else if br.value == "else":
+                    define else_hdr: String as ind + "else:"
+                    append else_hdr to lines
+                    define b_lines: List<String> as emit_block(br.children, level + 1)
+                    for each bl in b_lines:
+                        append bl to lines
+
+    else if node.kind == "for-each":
+        define coll_str: String as ""
+        if node.child is not nothing:
+            set coll_str to emit_expr(value of node.child)
+        define loop_hdr: String as ind + "for each " + node.value + " in " + coll_str + ":"
+        append loop_hdr to lines
+        define b_lines: List<String> as emit_block(node.children, level + 1)
+        for each bl in b_lines:
+            append bl to lines
+
+    else if node.kind == "for-range":
+        define start_str: String as ""
+        define end_str: String as ""
+        if node.child is not nothing:
+            define r_node: Node as value of node.child
+            if length of r_node.children >= 2:
+                set start_str to emit_expr(r_node.children[0])
+                set end_str to emit_expr(r_node.children[1])
+        define loop_hdr: String as ind + "for " + node.value + " from " + start_str + " to " + end_str + ":"
+        append loop_hdr to lines
+        define b_lines: List<String> as emit_block(node.children, level + 1)
+        for each bl in b_lines:
+            append bl to lines
+
+    else if node.kind == "while":
+        define cond_str: String as ""
+        if node.child is not nothing:
+            set cond_str to emit_expr(value of node.child)
+        define while_hdr: String as ind + "while " + cond_str + ":"
+        append while_hdr to lines
+        define b_lines: List<String> as emit_block(node.children, level + 1)
+        for each bl in b_lines:
+            append bl to lines
+
+    else if node.kind == "return":
+        if node.child is not nothing:
+            define ret_line: String as ind + "return " + emit_expr(value of node.child)
+            append ret_line to lines
+        else:
+            define ret_line: String as ind + "return"
+            append ret_line to lines
+
+    else if node.kind == "exit":
+        define code_str: String as ""
+        if node.child is not nothing:
+            set code_str to emit_expr(value of node.child)
+        define exit_line: String as ind + "exit with code " + code_str
+        append exit_line to lines
+
+    else if node.kind == "use":
+        define use_line: String as ind + "use " + node.value
+        append use_line to lines
+
+    else if node.kind == "call":
+        define a_strs: List<String> as empty List<String>
+        for each arg in node.children:
+            append emit_expr(arg) to a_strs
+        define a_text: String as join a_strs with ", "
+        define call_line: String as ind + "call " + node.value + "(" + a_text + ")"
+        append call_line to lines
+
+    else if node.kind == "add":
+        define expr_str: String as ""
+        if node.child is not nothing:
+            set expr_str to emit_expr(value of node.child)
+        define add_line: String as ind + "add " + expr_str + " to " + node.value
+        append add_line to lines
+
+    else if node.kind == "remove":
+        define expr_str: String as ""
+        if node.child is not nothing:
+            set expr_str to emit_expr(value of node.child)
+        define rem_line: String as ind + "remove " + expr_str + " from " + node.value
+        append rem_line to lines
+
+    else if node.kind == "assert":
+        define expr_str: String as ""
+        if node.child is not nothing:
+            set expr_str to emit_expr(value of node.child)
+        define ass_line: String as ind + "assert " + expr_str
+        append ass_line to lines
+
+    else if node.kind == "break":
+        define b_line: String as ind + "break"
+        append b_line to lines
+
+    else if node.kind == "continue":
+        define c_line: String as ind + "continue"
+        append c_line to lines
+
+    else if node.kind == "write":
+        if node.value == "json":
+            define expr_str: String as ""
+            if node.child is not nothing:
+                set expr_str to emit_expr(value of node.child)
+            define p_str: String as ""
+            if length of node.children > 0:
+                set p_str to emit_expr(node.children[0])
+            define w_line: String as ind + "write " + expr_str + " as json to file " + p_str
+            append w_line to lines
+        else if node.value == "file":
+            define p_str: String as ""
+            if length of node.children > 0:
+                set p_str to emit_expr(node.children[0])
+            define expr_str: String as ""
+            if node.child is not nothing:
+                set expr_str to emit_expr(value of node.child)
+            define w_line: String as ind + "write file " + p_str + " with " + expr_str
+            append w_line to lines
+
+    else if node.kind == "comment":
+        define com_line: String as ind + node.value
+        append com_line to lines
+
+    else if node.kind == "opaque":
+        if length of node.children > 0:
+            define op_line: String as ind + node.value
+            append op_line to lines
+            define b_lines: List<String> as emit_block(node.children, level + 1)
+            for each bl in b_lines:
+                append bl to lines
+        else:
+            define op_line: String as ind + node.value
+            append op_line to lines
+
+    else:
+        define def_line: String as ind + node.value
+        append def_line to lines
+
+    return lines
+
+function emit_program(root: Node) -> String:
+    define lines: List<String> as empty List<String>
+    define n: Int as length of root.children
+    if n == 0:
+        return ""
+    for i from 0 to n - 1:
+        define stmt: Node as root.children[i]
+        if i > 0:
+            define prev: Node as root.children[i - 1]
+            if not (prev.kind == "comment" and stmt.kind == "comment"):
+                append "" to lines
+        define stmt_lines: List<String> as emit_stmt(stmt, 0)
+        for each sl in stmt_lines:
+            append sl to lines
+    return join lines with "\n"

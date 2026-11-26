@@ -1,0 +1,4 @@
+data/
+*_bin
+tests/tmp/
+build.lock
